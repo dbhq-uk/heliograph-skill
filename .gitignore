@@ -1,0 +1,27 @@
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Local agent tooling state
+.serena/
+.superpowers/
+
+# Kept although the skill has no Python: a contributor's editor or a stray
+# tool can still drop these, and they should never reach a commit.
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Captured runs belong in a transport repo, never in this one. The toolkit's
+# own ignore file ships as skills/heliograph/toolkit/gitignore and deliberately
+# does NOT ignore these - there, committing a log is the entire point. Here, a
+# log is a real investigation that has escaped into a public repo.
+**/ops-logs/*.txt
+.agent.lock
+.agent-state

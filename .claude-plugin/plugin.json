@@ -1,0 +1,24 @@
+{
+  "name": "heliograph",
+  "description": "Debug and change a machine you cannot log into, through an operator who cannot debug it - for air-gapped, client-owned and change-controlled estates where nobody will be giving you SSH. Git is the transport in both directions: you push a step, they run one command that never changes, and the whole run comes back as a log with a UTC timestamp on every line, ANSI stripped and obvious secrets masked. Ships a bash toolkit (step runner, unattended git-polling agent, ad-hoc capture wrapper, SSH/Windows/Terraform/Ansible probes) plus the method for debugging across a gap. No packages, no credentials, no tunnel.",
+  "version": "1.0.0",
+  "author": {
+    "name": "DBHQ",
+    "email": "dan@dbhq.uk"
+  },
+  "homepage": "https://dbhq.uk",
+  "repository": "https://github.com/dbhq-uk/heliograph-skill",
+  "license": "MIT",
+  "keywords": [
+    "remote-debugging",
+    "air-gapped",
+    "diagnostics",
+    "devops",
+    "sre",
+    "incident-response",
+    "log-capture",
+    "ansible",
+    "terraform",
+    "bash"
+  ]
+}

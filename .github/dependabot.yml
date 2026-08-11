@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # GitHub Actions only. There is no pip, npm or apt ecosystem here on purpose:
+  # the toolkit needs bash, git and GNU coreutils and nothing else, because a
+  # locked-down control node is where it has to run. Nothing to keep up to date
+  # is the point, not an omission.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns:
+          - "*"

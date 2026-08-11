@@ -1,0 +1,20 @@
+# agent/request - Claude edits this; agent.sh watches it.
+#
+# THE TRIGGER IS `id`. The agent runs only when this value changes, so ordinary
+# commits to a branch (docs, step edits, payload changes) do not set anything
+# running. Bump it when, and only when, you want a run.
+#
+#   id    required. Any unique string; a UTC stamp plus the step reads well.
+#   step  which step to run. Blank = whatever DEFAULT_STEP is in run.sh.
+#   env   extra environment for the run, e.g. `CONFIRM=yes` or `TARGET_REPO=/x`.
+#   stop  `yes` makes the agent exit cleanly after its current run.
+#   note  free text for whoever reads this next. Ignored by the agent.
+#
+# On main this file is the template - an empty `id` means the agent starts up
+# and waits, which is the right behaviour for a branch with no work on it yet.
+
+id:
+step:
+env:
+stop:
+note:

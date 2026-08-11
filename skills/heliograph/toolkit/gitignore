@@ -1,0 +1,74 @@
+# =============================================================================
+#  .gitignore
+# =============================================================================
+#  NOTE: ops-logs/*.txt is deliberately NOT ignored. The captured logs are the
+#  whole point of this repo - committing them is how a run escapes a machine
+#  nobody can reach. Don't "tidy" them into here.
+# =============================================================================
+
+# --- secrets: never, under any circumstances ---------------------------------
+.git-token
+pat.txt
+*.pat
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+*.jks
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+*credential*
+*secret*.json
+*secrets*.yml
+*secrets*.yaml
+kubeconfig
+.kube/
+
+# --- terraform ---------------------------------------------------------------
+# State can hold secrets in plaintext and is never this repo's to own.
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+crash.log
+crash.*.log
+tfplan
+*.tfplan
+
+# --- ansible -----------------------------------------------------------------
+*.retry
+.vault_pass
+vault_pass.txt
+fact_cache/
+
+# --- python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# --- scratch -----------------------------------------------------------------
+scratch/
+tmp/
+*.tmp
+*.bak
+*.orig
+*.swp
+*~
+
+# --- editors / OS ------------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- agent state (local to each control node, never shared) ------------------
+.agent.lock
+.agent-state

@@ -1,0 +1,5 @@
+# Captured runs land here - see RUNNER.md.
+#
+# These files are TRACKED on purpose: committing a log is how a run escapes a
+# machine nobody can interactively reach. Clear them with `git rm ops-logs/*.txt`
+# when an investigation closes - git history keeps them.

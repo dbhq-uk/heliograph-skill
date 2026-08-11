@@ -1,0 +1,213 @@
+name: Validate plugin
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate plugin manifest is valid JSON
+        run: jq empty .claude-plugin/plugin.json
+
+      - name: Check shell scripts parse
+        # Root installers included: a syntax error there breaks every install.
+        run: |
+          fail=0
+          while IFS= read -r s; do
+            bash -n "$s" || { echo "Syntax error: $s"; fail=1; }
+          done < <({ find . -maxdepth 1 -name '*.sh'; find skills -name '*.sh'; })
+          exit $fail
+
+      - name: Shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck -S warning $(find . -name '*.sh' -not -path './.git/*')
+
+      - name: Check SKILL.md frontmatter
+        run: |
+          python3 - <<'PY'
+          import sys, pathlib, re
+          ok = True
+          for skill in sorted(pathlib.Path("skills").glob("*/SKILL.md")):
+              text = skill.read_text(encoding="utf-8")
+              m = re.match(r"^---\n(.*?)\n---", text, re.S)
+              if not m:
+                  print(f"{skill}: missing YAML frontmatter"); ok = False; continue
+              fm = m.group(1)
+              name = re.search(r"^name:\s*(.+)$", fm, re.M)
+              desc = re.search(r"^description:\s*(.+)$", fm, re.M)
+              if not name:
+                  print(f"{skill}: missing 'name'"); ok = False
+              else:
+                  name = name.group(1).strip()
+                  if name != skill.parent.name:
+                      print(f"{skill}: name '{name}' != directory '{skill.parent.name}'"); ok = False
+                  if not re.fullmatch(r"[a-z0-9-]{1,64}", name):
+                      print(f"{skill}: name must be lowercase alphanumeric/hyphen, <=64 chars"); ok = False
+              if not desc:
+                  print(f"{skill}: missing 'description'"); ok = False
+              elif len(desc.group(1).strip()) > 1024:
+                  print(f"{skill}: description exceeds 1024 chars"); ok = False
+          sys.exit(0 if ok else 1)
+          PY
+
+      # The whole install story rests on ${CLAUDE_SKILL_DIR} being substituted.
+      # A hardcoded ~/.claude/skills path works on the author's machine and is
+      # wrong under both a Codex install and a plugin install.
+      - name: No hardcoded install paths
+        run: |
+          if grep -rn '~/\.claude/skills\|\$HOME/\.claude/skills' skills/; then
+            echo "::error::Hardcoded install path found. Use \${CLAUDE_SKILL_DIR} instead."
+            exit 1
+          fi
+          echo "No hardcoded install paths."
+
+      # House style is a plain hyphen. Cheap to assert, and it drifts back in
+      # every time a paragraph is pasted from somewhere else.
+      - name: No em dashes
+        run: |
+          hits=$(grep -rn $'—' --include='*.md' --include='*.sh' --include='*.json' . || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error::Em dash found. House style is a plain hyphen."
+            exit 1
+          fi
+          echo "No em dashes."
+
+      # Every rule this skill teaches about not truncating a diagnostic applies
+      # to the toolkit itself, and `probe` lines are where that rule bites: what
+      # a probe prints IS the evidence, so a `head` there cuts the line someone
+      # needed and the loss is invisible in the log.
+      #
+      # Scoped to probe lines deliberately. A first attempt flagged every `head`
+      # and `2>/dev/null` in steps/ and caught nine capability checks - "which
+      # version of kubectl", "is there a default route" - where a one-line answer
+      # is the whole answer and a suppressed error means "not installed" rather
+      # than a finding. A check that needs nine exemptions on a two-file corpus
+      # asserts nothing; this one asserts the rule that matters.
+      - name: Probes do not truncate their own evidence
+        run: |
+          hits=$(grep -nE '^[[:space:]]*probe(_opt)? .*\|[[:space:]]*(head|tail)\b' \
+                 skills/heliograph/toolkit/steps/*.sh || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error::A probe truncates its own output. See references/method.md rule 4."
+            exit 1
+          fi
+          echo "No truncated probes."
+
+  installers:
+    name: Installers actually install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Claude install
+        run: |
+          ./install.sh
+          test -L "$HOME/.claude/skills/heliograph" || { echo "not a symlink"; exit 1; }
+          test -f "$HOME/.claude/skills/heliograph/SKILL.md" || { echo "SKILL.md missing"; exit 1; }
+
+      - name: Codex install, and the rewritten paths resolve
+        run: |
+          ./install-codex.sh
+          target="$HOME/.codex/skills/heliograph"
+          test -f "$target/SKILL.md" || { echo "SKILL.md missing"; exit 1; }
+          grep -q 'CLAUDE_SKILL_DIR' "$target/SKILL.md" && { echo "variable not substituted"; exit 1; }
+          for sub in references scripts toolkit; do
+            test -d "$target/$sub" || { echo "$sub/ not linked"; exit 1; }
+          done
+          # Every path the rewritten SKILL.md names must exist on disk.
+          fail=0
+          while IFS= read -r p; do
+            [ -e "$p" ] || { echo "rewritten path does not exist: $p"; fail=1; }
+          done < <(grep -o "$target[^ \`\"']*" "$target/SKILL.md" | sort -u)
+          exit $fail
+
+      - name: No dangling symlinks after either install
+        run: |
+          found=$(find "$HOME/.claude/skills/heliograph/" "$HOME/.codex/skills/heliograph/" -xtype l 2>/dev/null || true)
+          if [ -n "$found" ]; then echo "::error::dangling symlinks:"; echo "$found"; exit 1; fi
+          echo "No dangling symlinks."
+
+  toolkit:
+    name: The toolkit captures a run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The one thing worth exercising end to end. A capture that loses the
+      # timestamps, swallows an exit code, or writes nothing on failure is the
+      # failure mode this whole repo exists to avoid, and it is invisible until
+      # someone is waiting on the far side of a gap for a log that never comes.
+      - name: Bootstrap into a fresh repo
+        run: |
+          ./skills/heliograph/scripts/bootstrap.sh /tmp/transport
+          cd /tmp/transport
+          test -f .gitignore || { echo "gitignore not installed as .gitignore"; exit 1; }
+          test ! -e gitignore || { echo "undotted gitignore left behind"; exit 1; }
+          git init -q && git add -A && git -c user.email=ci@example.com -c user.name=ci commit -qm init
+
+      - name: A passing step is captured, timestamped and complete
+        run: |
+          cd /tmp/transport
+          PUSH=0 ./run.sh env
+          log=$(ls -t ops-logs/env-*.txt | head -1)
+          grep -q 'git commit  :' "$log" || { echo "header missing provenance"; exit 1; }
+          grep -q 'RESULT       : ' "$log" || { echo "footer missing"; exit 1; }
+          # Every captured line carries a UTC clock. Header and footer are
+          # written outside cap_run and are exempt; the body is not.
+          bad=$(sed -n '/^---------- /,$p' "$log" \
+                | grep -vE '^[0-9]{2}:[0-9]{2}:[0-9]{2} \| |^$|^-{5}|^={5}| finished UTC | exit code | RESULT ' \
+                | head -5)
+          if [ -n "$bad" ]; then echo "untimestamped lines:"; echo "$bad"; exit 1; fi
+
+      - name: A failing step still produces a log and the real exit code
+        run: |
+          cd /tmp/transport
+          printf '#!/usr/bin/env bash\nset -uo pipefail\necho "this step fails"\nexit 7\n' > steps/boom.sh
+          chmod +x steps/boom.sh
+          sed -i 's|^  net)|  boom) CMD=(./steps/boom.sh) ;;\n  net)|' run.sh
+          set +e; PUSH=0 ./run.sh boom; rc=$?; set -e
+          [ "$rc" = "7" ] || { echo "expected exit 7, got $rc"; exit 1; }
+          log=$(ls -t ops-logs/boom-*.txt | head -1)
+          grep -q 'exit code    : 7' "$log" || { echo "footer lost the exit code"; exit 1; }
+          grep -q 'RESULT       : FAILED' "$log" || { echo "footer did not mark failure"; exit 1; }
+
+      - name: An unknown step exits 2 having done nothing
+        run: |
+          cd /tmp/transport
+          before=$(ls ops-logs | wc -l)
+          set +e; PUSH=0 ./run.sh nosuchstep >/dev/null 2>&1; rc=$?; set -e
+          [ "$rc" = "2" ] || { echo "expected exit 2, got $rc"; exit 1; }
+          [ "$(ls ops-logs | wc -l)" = "$before" ] || { echo "an unknown step wrote a log"; exit 1; }
+
+      - name: A gated step refuses without CONFIRM
+        run: |
+          cd /tmp/transport
+          sed -i 's|^  boom)|  apply) CMD=(./steps/boom.sh) ;;\n  boom)|' run.sh
+          set +e; PUSH=0 ./run.sh apply >/dev/null 2>&1; rc=$?; set -e
+          [ "$rc" = "3" ] || { echo "a state-changing step ran without CONFIRM=yes (exit $rc)"; exit 1; }
+
+  # Single required check for branch protection. Adding a job above does not mean
+  # remembering to add it to the protection rule - it only needs listing here.
+  ci-ok:
+    name: CI OK
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - validate
+      - installers
+      - toolkit
+    steps:
+      - name: Fail if any job did not succeed
+        run: |
+          results='${{ join(needs.*.result, ' ') }}'
+          echo "job results: $results"
+          for r in $results; do
+            [ "$r" = "success" ] || { echo "::error::a job did not succeed"; exit 1; }
+          done
