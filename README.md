@@ -137,6 +137,7 @@ reads the logs. What you decide is which question to ask next.
 | `agent.sh` | the unattended loop: watches for a request, runs it, pushes |
 | `caprun.sh` | wrap any ad-hoc command in the same capture and push |
 | `caplib.sh` | the shared capture, log and push functions |
+| `secret.sh` | carry a value the *other* way, as ciphertext, when the far side needs one |
 | `steps/env-snapshot.sh` | control-node baseline: OS, tools, auth, proxy, DNS, git |
 | `steps/net-probe.sh` | DNS, ICMP and a TCP matrix, in both directions |
 | `lib/` | `probe.sh`, `remote.sh` (SSH and Windows), `terraform.sh`, `ansible.sh`, `tfguard.sh` |
@@ -157,6 +158,13 @@ history permanently. `cap_redact` masks the obvious shapes (`password=`,
 `Bearer`, `Basic`, private keys) on the way out. **It is a safety net, not a
 guarantee.** Do not run things that print secrets, and keep the transport repo
 private.
+
+Occasionally a value has to travel the other way: something the far side needs
+and cannot fetch for itself. `secret.sh` carries it as ciphertext, with the
+passphrase defined by a human on both machines and never committed, so git
+carries something useless on its own. It is transport rather than storage, and
+[`references/secrets.md`](skills/heliograph/references/secrets.md) is honest
+about the limits of that.
 
 ## What this will not do
 

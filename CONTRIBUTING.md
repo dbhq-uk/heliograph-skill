@@ -62,7 +62,9 @@ not a judgement call.
 
 **Anything that reads a secret.** Naming a secret settles "does this exist here";
 its value is never the question, and a log is permanent. Do not add a helper that
-prints one, and do not weaken `cap_redact`.
+prints one, and do not weaken `cap_redact`. `secret.sh` is not an exception to
+this: it carries a value you already hold *to* the far side as ciphertext, and
+reads nothing off it.
 
 **Real logs, real host names, real estates.** No `ops-logs/*.txt` from an actual
 investigation, no internal DNS names, no client or employer names, and no

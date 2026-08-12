@@ -254,3 +254,25 @@ in [transport.md](transport.md).
 `ops-logs/*.txt` is tracked deliberately - the log is the deliverable, and committing it is how
 it gets out of an environment you cannot reach. Clear them with `git rm ops-logs/*.txt` when an
 investigation closes; history keeps them.
+
+---
+
+## `secret.sh` - a value going the other way
+
+```bash
+./secret.sh key             # define the passphrase, on BOTH machines
+./secret.sh key show        # its fingerprint, so the two can be compared
+./secret.sh put <name>      # read from stdin, store encrypted under secrets/
+./secret.sh get <name>      # decrypt to stdout, for $( ) capture in a step
+./secret.sh check <name>    # prove it decrypts here, without printing it
+./secret.sh list            # names, sizes, dates
+./secret.sh rm <name>       # drop it from the working tree (not from history)
+```
+
+Not a runner: it owns no log and pushes nothing. It is here because a step
+occasionally needs a value the far side cannot fetch for itself, and the transport
+repo is the only channel. The ciphertext travels in git; the passphrase is typed
+by a human on each machine and never committed.
+
+`get` is the only part a step calls, and it never prompts. The full account, and
+why each guard is there, is in [secrets.md](secrets.md).
