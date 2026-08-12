@@ -4,10 +4,17 @@
 #  NOTE: ops-logs/*.txt is deliberately NOT ignored. The captured logs are the
 #  whole point of this repo - committing them is how a run escapes a machine
 #  nobody can reach. Don't "tidy" them into here.
+#
+#  NOTE: secrets/*.enc is deliberately NOT ignored either. Those are ciphertext,
+#  and git is the only channel that reaches the far side, so they have to travel
+#  in the repo. The passphrase never does - it lives outside this repo, mode
+#  0600, and is defined on each machine by hand with `./secret.sh key`.
 # =============================================================================
 
 # --- secrets: never, under any circumstances ---------------------------------
 .git-token
+.heliograph-passphrase
+*passphrase*
 pat.txt
 *.pat
 .env

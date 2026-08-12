@@ -19,9 +19,9 @@ Every rule in here was paid for by an investigation that went wrong first.
 ```
 .claude-plugin/plugin.json          # plugin manifest
 skills/heliograph/SKILL.md          # the skill (agent-facing instructions)
-skills/heliograph/references/       # method, runner reference, step-writing, transport, remote repos
+skills/heliograph/references/       # method, runner reference, step-writing, transport, secrets, remote repos
 skills/heliograph/scripts/          # bootstrap.sh - installs the toolkit into a transport repo
-skills/heliograph/toolkit/          # what gets copied out: run.sh, agent.sh, caplib.sh, lib/, steps/
+skills/heliograph/toolkit/          # what gets copied out: run.sh, agent.sh, caplib.sh, secret.sh, lib/, steps/
 install.sh / install-codex.sh       # local symlink installers (Claude / Codex)
 ```
 

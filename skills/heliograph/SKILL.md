@@ -164,6 +164,29 @@ permanently.
 - The transport repo's `.gitignore` blocks the usual carriers. Do not `git add
   -f` around it.
 
+### When a value has to go the other way
+
+Occasionally the far side needs a secret it cannot fetch for itself. `secret.sh`
+carries it as ciphertext, with the passphrase defined by a human on both machines
+and never committed:
+
+```bash
+./secret.sh key                    # on BOTH machines, then compare fingerprints
+./secret.sh put registry-pass      # paste the value, Ctrl-D
+git add secrets/ && git commit && git push
+```
+
+and in a step on the far side, captured, never echoed:
+
+```bash
+PASS="$("$HERE/../secret.sh" get registry-pass)"; export PASS
+```
+
+**It is transport, not storage**: the ciphertext is in history forever. Prefer
+short-lived, narrowly scoped credentials, and land the real secret in whatever
+store the far side has. Details, and why each guard is there:
+[references/secrets.md](references/secrets.md).
+
 ## References
 
 | | |
@@ -172,4 +195,5 @@ permanently.
 | [references/runner.md](references/runner.md) | `run.sh`, `agent.sh`, `caprun.sh`, every `cap_*` and knob |
 | [references/method.md](references/method.md) | how to debug across a gap. The expensive lessons |
 | [references/transport.md](references/transport.md) | how the control node authenticates to the git host |
+| [references/secrets.md](references/secrets.md) | `secret.sh`, for a value that has to reach the far side |
 | [references/remote-repo.md](references/remote-repo.md) | changing a repo that is also on the far side |
