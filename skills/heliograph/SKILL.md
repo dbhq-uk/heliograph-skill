@@ -101,8 +101,17 @@ The trigger is the **`id`**, not a new commit: docs and step edits land
 constantly and would otherwise fire runs nobody asked for. `stop: yes` ends the
 agent from your side, which matters because nobody is sitting at that terminal.
 
-State-changing steps need `--allow-actions` on the agent **and** `CONFIRM=yes` in
-the request's `env:`. Both, deliberately.
+State-changing steps need `CONFIRM=yes` in the request's `env:` **and** pass
+`run.sh`'s own gate. Both, deliberately. The agent will run one unless it was
+started with `--no-actions`.
+
+`cancel: yes` kills the step running right now, and `cancel: <id>` kills it only
+if that id is the one running. The agent stays responsive while a step runs, so a
+long or wrong run does not have to be waited out. A new `id` does **not** cancel:
+it queues behind the running step, because an in-flight step may be mid-change.
+
+A long run is not a black box: the partial log is pushed every 60 seconds with a
+line count and the last real line, so `git pull` shows where it has got to.
 
 While an agent is running, **say so and wait for the log**. Ask the operator only
 for what git cannot carry: an interactive cloud login, a decision, or a fact only

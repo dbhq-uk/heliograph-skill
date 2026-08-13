@@ -13,7 +13,7 @@ treatment from `./run.sh foo` without changing a line.
 
 ```bash
 ./agent.sh                     # poll, run, push, repeat
-./agent.sh --allow-actions     # ...including steps that change state
+./agent.sh --no-actions        # refuse any step that changes state
 ./agent.sh --once              # one requested run, then exit
 ./agent.sh --interval 15       # seconds between polls (default 5)
 ```
@@ -43,12 +43,62 @@ branch constantly; if any commit fired a run, the agent would run on all of them
 |---|---|
 | `id` | **the trigger.** Any unique string; a UTC stamp plus the step name reads well |
 | `step` | which step to run. Blank means `DEFAULT_STEP` from `run.sh` |
-| `env` | extra environment for the run - `CONFIRM=yes`, `PREPROD_REPO=/path`, ... |
+| `env` | extra environment for the run - `CONFIRM=yes`, `TARGET_REPO=/path`, ... |
+| `cancel` | `yes` kills the step running right now; an id kills it only if that id is running |
 | `stop` | `yes` makes the agent exit cleanly after its current run |
 | `note` | free text for the next human. Ignored by the agent |
 
 `stop: yes` matters more than it looks: the whole point is that nobody is at that terminal, so the
 agent has to be stoppable from the same side that starts its work.
+
+### Watching a run in progress
+
+While a step runs, the agent pushes the **partial log** every `PROGRESS_EVERY` seconds (default
+60, `0` disables) along with an `agent/status` carrying a line count and the last real line:
+
+```
+state:    running     progress: 412 lines
+log:      ops-logs/tls-survey-20260813T134932Z.txt
+last:     11:31:29 | ---------- openssl s_client -connect hostb:443 ----------
+```
+
+So `git pull` on a long run shows where it has got to. "Running for forty minutes" and "wedged"
+used to look identical from the far side; the last line usually names the probe currently in
+flight.
+
+**It pushes but never pulls or rebases.** The step is appending to that log through an open file
+descriptor - a rebase would rewrite the file underneath it and the appends would continue at a
+stale offset, corrupting the evidence this exists to publish. A rejected push (because the remote
+moved) is just retried next cycle, and `run.sh`'s own `cap_push` reconciles properly at the end.
+
+The runner still owns the log. This publishes a snapshot and never writes to it.
+
+### Cancelling a run
+
+The step runs in its own process group, in the background, and the loop keeps polling while it
+works. An hour-long step no longer makes the agent deaf for an hour.
+
+```
+cancel: yes                     # kill whatever is running
+cancel: 20260813T1500Z-survey   # kill it only if that id is the one running
+```
+
+- **A cancel already in the file when a step starts is ignored.** Only a change is an instruction.
+  Without that, the `cancel: yes` that stopped one run sits there and reaps the next request the
+  moment it starts - observed in testing as a step that finished cleanly and was still published as
+  `cancelled`. Clearing the field, then setting it again, counts as a change.
+- `cancel: <id>` is the belt to that braces: it names what it is stopping, so it cannot reap a
+  later, wanted run even in principle.
+- `TERM` first, `KILL` after five seconds. The partial log is kept: a log that stops mid-sentence
+  is still evidence, and usually the evidence you wanted.
+- The run publishes state `cancelled` with exit `130`, so a cancelled run is never mistaken for a
+  step that failed on its merits.
+- **A new `id` does not cancel.** An in-flight step may be mid-change, and inferring "kill it" from
+  a queued request would be guessing. The new request waits its turn, and the agent says so.
+- While a step runs the agent reads the request from the **remote ref**, never by pulling. A rebase
+  underneath a running step would corrupt the run it was only trying to observe.
+- Ctrl-C on the agent signals the running step too, rather than leaving it detached to push a log
+  with nothing watching it.
 
 ### agent/status
 
@@ -56,7 +106,7 @@ Pushed on every transition, so the far side can tell "running for four minutes" 
 up" - which is otherwise invisible until a log appears.
 
 ```
-state:    running | idle | refused | stopped
+state:    running | idle | cancelled | refused | stopped
 id:       the request it is working on
 step:     which step
 host:     which control node
@@ -65,14 +115,24 @@ started:  finished:  exit:  log:      (on completion)
 
 ### Safety
 
-`--allow-actions` (or `ALLOW_ACTIONS=1`) is required before the agent will run a step listed in
-`ACTION_STEPS` - `apply deploy destroy reset` by default. Without it the request is **refused**,
-recorded in `agent/status`, and not retried. An unattended loop that can change infrastructure
-because a file changed is a different proposition from one that only reads, and it should be a
-deliberate choice made when starting the agent, not a default.
+A step that changes state is recognised two ways: by **name** (`ACTION_STEPS` - `apply deploy
+destroy reset` by default) and by **env** (`ACTION_ENV` - anything matching `APPLY=1`, `CONFIRM=yes`,
+`DESTROY=1`, `FORCE=1`, `WRITE=1` in the request's `env:` line). The name-only version had a hole: a
+step named for a diagnostic that only writes once `env: APPLY=1` is passed sailed straight through.
 
-This does not replace `run.sh`'s own `CONFIRM=yes` gate - a step gated there still needs
-`env: CONFIRM=yes` in the request.
+Such a step still has to carry `env: CONFIRM=yes`, and `run.sh` gates it again on its own. **Both
+gates, deliberately**, and neither has anything to do with how the agent was started.
+
+`ALLOW_ACTIONS` decides whether this agent will run one at all. **It defaults to 1**, because it was
+a flag typed once at agent start, often days before the request it gated: forgetting it surfaced as
+a silent `refused` long after the request was pushed, which wastes the round trip this tooling
+exists to save. Start with `--no-actions` (or `ALLOW_ACTIONS=0`) for a loop that must never write:
+the request is then **refused**, recorded in `agent/status`, and not retried.
+
+Making it the default is a real change in posture, so be plain about what still holds. `apply`,
+`destroy` and friends will not run because a file changed: they need `CONFIRM=yes` in the request
+**and** `run.sh`'s gate **and** whatever mode check the step itself has. What the default removes is
+a fourth gate that could only be set at a moment when nobody knew yet what would be asked for.
 
 ### Operational notes
 
@@ -144,6 +204,7 @@ chain or gate on.
 | `CONFIRM` | unset | required (`CONFIRM=yes`) for gated state-changing steps in `run.sh` |
 | `REDACT` | `1` | `REDACT=0` disables secret masking, when it's hiding something you need |
 | `LOG_DIR` | `ops-logs/` | where the log is written |
+| `PROGRESS_EVERY` | `60` | seconds between partial-log pushes while a step runs (`agent.sh`; `0` disables) |
 | `NO_COLOUR` | unset | plain banners, no ANSI |
 | `GIT_TOKEN` / `GIT_TOKEN_FILE` | unset | token for the git push over an HTTPS remote (see *Pushing* below) |
 
