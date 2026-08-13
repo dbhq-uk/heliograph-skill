@@ -58,6 +58,12 @@ them may be wasted by tooling that only reports success.
 lets you run `./steps/foo.sh` straight to a terminal while writing it. There is
 one implementation of the capture pattern, in `caplib.sh`. Do not fork it.
 
+`agent.sh` pushes the partial log while a step runs, and that is not a crack in
+this: it publishes a **snapshot** and never writes to the file. The step is
+appending through an open descriptor, which is also why those pushes never pull
+or rebase - a rewrite underneath a running step would leave the appends
+continuing at a stale offset. `cap_push` remains the authoritative final push.
+
 **4. Read-only until earned, and gated per request.** A step that changes state
 is listed in `run.sh`'s `CONFIRM=yes` gate, so a stale `DEFAULT_STEP` can never
 do damage on its own, and `agent.sh` recognises one by name (`ACTION_STEPS`) and

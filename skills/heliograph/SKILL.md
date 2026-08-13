@@ -110,6 +110,9 @@ if that id is the one running. The agent stays responsive while a step runs, so 
 long or wrong run does not have to be waited out. A new `id` does **not** cancel:
 it queues behind the running step, because an in-flight step may be mid-change.
 
+A long run is not a black box: the partial log is pushed every 60 seconds with a
+line count and the last real line, so `git pull` shows where it has got to.
+
 While an agent is running, **say so and wait for the log**. Ask the operator only
 for what git cannot carry: an interactive cloud login, a decision, or a fact only
 they have.

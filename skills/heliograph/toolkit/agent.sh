@@ -27,6 +27,10 @@
 #  STOPPING: `stop: yes` in agent/request, or Ctrl-C. The stop flag is honoured
 #  from the far side precisely because nobody is sitting at this terminal.
 #
+#  WATCHING: while a step runs the agent pushes the partial log every
+#  PROGRESS_EVERY seconds (default 60, 0 disables) with a line count and the last
+#  real line, so a long run can be followed instead of waited out.
+#
 #  CANCELLING: `cancel: yes` kills the step that is running right now; `cancel:
 #  <id>` kills it only if that id is the one running, so a stale cancel cannot
 #  reap a later run. The step runs in its own process group in the background and
@@ -75,7 +79,7 @@ while [ $# -gt 0 ]; do
     --interval)      INTERVAL="$2"; shift ;;
     --allow-actions) ALLOW_ACTIONS=1 ;;   # now the default; kept so old invocations still work
     --no-actions)    ALLOW_ACTIONS=0 ;;
-    -h|--help)       sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)       sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift
@@ -155,8 +159,14 @@ is_action_step() {
 # Two extra commits per run. Worth it: without the "running" one, a long step is
 # indistinguishable from an agent that never woke up.
 publish_status() {
-  local state="$1" id="$2" step="$3" extra="${4:-}"
+  local state="$1" id="$2" step="$3" extra="${4:-}" alsofile="${5:-}"
   mkdir -p agent
+  # A killed step leaves its log modified in the working tree, and progress
+  # pushes have made that file TRACKED - so unless it is committed here, every
+  # later `pull --rebase` refuses on a dirty tree and the agent wedges with the
+  # cancellation never reaching the far side. Found by cancelling a run that had
+  # been publishing progress.
+  [ -n "$alsofile" ] && [ -f "$alsofile" ] || alsofile=""
   {
     echo "state:    $state"
     echo "id:       $id"
@@ -166,14 +176,58 @@ publish_status() {
     echo "utc:      $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     [ -n "$extra" ] && echo "$extra"
   } > "$STATUS"
-  git add -f "$STATUS" >/dev/null 2>&1
-  git diff --cached --quiet -- "$STATUS" >/dev/null 2>&1 && return 0
+  git add -f "$STATUS" ${alsofile:+"$alsofile"} >/dev/null 2>&1
+  git diff --cached --quiet -- "$STATUS" ${alsofile:+"$alsofile"} >/dev/null 2>&1 && return 0
   git -c user.name="${GIT_AUTHOR_NAME:-agent}" \
       -c user.email="${GIT_AUTHOR_EMAIL:-agent@$(hostname)}" \
-      commit -q -m "agent: $state ($id)" -- "$STATUS" 2>/dev/null
+      commit -q -m "agent: $state ($id)" -- "$STATUS" ${alsofile:+"$alsofile"} 2>/dev/null
   cap_git pull --rebase --quiet >/dev/null 2>&1
   cap_git push --quiet >/dev/null 2>&1 || cap_git push --quiet -u origin HEAD >/dev/null 2>&1 || \
     say "status push failed (will retry on the next transition)"
+}
+
+# --- progress, pushed WHILE a step runs --------------------------------------
+# A long step used to be a black box: nothing reached the repo until it finished,
+# so "running for forty minutes" and "wedged" looked identical from the far side.
+# This pushes the partial log periodically so the run can be watched as it goes.
+#
+# NO PULL, NO REBASE, DELIBERATELY. The step is appending to that log through an
+# open file descriptor; a rebase would rewrite the file underneath it and the
+# appends would carry on at a stale offset, corrupting the very evidence we are
+# trying to publish. So this only ever pushes, and a rejected push is simply
+# retried next time - run.sh's own cap_push reconciles properly at the end.
+#
+# The runner still owns the log. This publishes a snapshot of it and never writes
+# to it, so the ownership rule the whole toolkit rests on is intact.
+PROGRESS_EVERY="${PROGRESS_EVERY:-60}"      # seconds; 0 disables
+publish_progress() {
+  local id="$1" step="$2" started="$3" logfile="$4"
+  [ -n "$logfile" ] && [ -f "$logfile" ] || return 0
+  local lines last
+  lines="$(wc -l < "$logfile" 2>/dev/null || echo 0)"
+  # The last non-blank, non-divider line says more about where a step is than a
+  # line count does - it is usually the probe currently in flight.
+  last="$(grep -vE '^[[:space:]]*$|^-{5,}|^={5,}' "$logfile" 2>/dev/null | tail -1 | cut -c1-160)"
+  mkdir -p agent
+  {
+    echo "state:    running"
+    echo "id:       $id"
+    echo "step:     $step"
+    echo "host:     $(hostname -f 2>/dev/null || hostname)"
+    echo "branch:   $BRANCH"
+    echo "utc:      $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "started:  $started"
+    echo "progress: ${lines} lines"
+    echo "log:      $logfile"
+    [ -n "$last" ] && echo "last:     $last"
+  } > "$STATUS"
+  git add -f "$STATUS" "$logfile" >/dev/null 2>&1
+  git diff --cached --quiet -- "$STATUS" "$logfile" >/dev/null 2>&1 && return 0
+  git -c user.name="${GIT_AUTHOR_NAME:-agent}" \
+      -c user.email="${GIT_AUTHOR_EMAIL:-agent@$(hostname)}" \
+      commit -q -m "agent: progress ($id) ${lines} lines" -- "$STATUS" "$logfile" 2>/dev/null
+  cap_git push --quiet >/dev/null 2>&1 ||
+    say "progress push rejected (remote moved) - will retry; the final push reconciles"
 }
 
 say "agent up on $BRANCH at $(hostname -f 2>/dev/null || hostname), polling every ${INTERVAL}s"
@@ -284,8 +338,22 @@ while :; do
   # Only a CHANGE is an instruction.
   CANCEL_AT_START="$(field cancel)"
 
+  LAST_PROGRESS=0
   while kill -0 "$CHILD" 2>/dev/null; do
     sleep "$INTERVAL"
+
+    # Publish the partial log on a slower clock than the poll: every INTERVAL
+    # would be a commit every five seconds and an unreadable history.
+    if [ "$PROGRESS_EVERY" != "0" ]; then
+      NOW="$(date +%s)"
+      if [ $((NOW - LAST_PROGRESS)) -ge "$PROGRESS_EVERY" ]; then
+        # shellcheck disable=SC2012
+        RUNNING_LOG="$(ls -t ops-logs/"${STEP}"-*.txt 2>/dev/null | head -1)"
+        publish_progress "$ID" "$STEP" "$START" "$RUNNING_LOG"
+        LAST_PROGRESS="$NOW"
+      fi
+    fi
+
     # Read the request from the REMOTE ref, never by pulling: the step is writing
     # to this working tree right now, and a rebase underneath a running step is
     # how you corrupt a run you were only trying to observe.
@@ -348,8 +416,11 @@ while :; do
   LOGFILE="$(ls -t ops-logs/"${STEP}"-*.txt 2>/dev/null | head -1)"
   if [ "$CANCELLED" = "1" ]; then
     say "step '$STEP' CANCELLED${LOGFILE:+  (partial log: $LOGFILE)}"
+    # The log goes in this commit too: the step was killed, so run.sh's cap_push
+    # never ran, and this is the only thing that will carry the partial evidence
+    # out - as well as what leaves the tree clean enough to keep polling.
     publish_status "cancelled" "$ID" "$STEP" "$(printf 'started:  %s\ncancelled:%s\nexit:     %s\nlog:      %s\nnote:     partial - the step was signalled, so the log stops where it stopped' \
-        "$START" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$RC" "${LOGFILE:-<none>}")"
+        "$START" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$RC" "${LOGFILE:-<none>}")" "$LOGFILE"
   else
     say "step '$STEP' finished exit=$RC${LOGFILE:+  ($LOGFILE)}"
     publish_status "idle" "$ID" "$STEP" "$(printf 'started:  %s\nfinished: %s\nexit:     %s\nlog:      %s' \

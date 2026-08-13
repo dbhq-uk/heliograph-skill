@@ -51,6 +51,28 @@ branch constantly; if any commit fired a run, the agent would run on all of them
 `stop: yes` matters more than it looks: the whole point is that nobody is at that terminal, so the
 agent has to be stoppable from the same side that starts its work.
 
+### Watching a run in progress
+
+While a step runs, the agent pushes the **partial log** every `PROGRESS_EVERY` seconds (default
+60, `0` disables) along with an `agent/status` carrying a line count and the last real line:
+
+```
+state:    running     progress: 412 lines
+log:      ops-logs/tls-survey-20260813T134932Z.txt
+last:     11:31:29 | ---------- openssl s_client -connect hostb:443 ----------
+```
+
+So `git pull` on a long run shows where it has got to. "Running for forty minutes" and "wedged"
+used to look identical from the far side; the last line usually names the probe currently in
+flight.
+
+**It pushes but never pulls or rebases.** The step is appending to that log through an open file
+descriptor - a rebase would rewrite the file underneath it and the appends would continue at a
+stale offset, corrupting the evidence this exists to publish. A rejected push (because the remote
+moved) is just retried next cycle, and `run.sh`'s own `cap_push` reconciles properly at the end.
+
+The runner still owns the log. This publishes a snapshot and never writes to it.
+
 ### Cancelling a run
 
 The step runs in its own process group, in the background, and the loop keeps polling while it
@@ -182,6 +204,7 @@ chain or gate on.
 | `CONFIRM` | unset | required (`CONFIRM=yes`) for gated state-changing steps in `run.sh` |
 | `REDACT` | `1` | `REDACT=0` disables secret masking, when it's hiding something you need |
 | `LOG_DIR` | `ops-logs/` | where the log is written |
+| `PROGRESS_EVERY` | `60` | seconds between partial-log pushes while a step runs (`agent.sh`; `0` disables) |
 | `NO_COLOUR` | unset | plain banners, no ANSI |
 | `GIT_TOKEN` / `GIT_TOKEN_FILE` | unset | token for the git push over an HTTPS remote (see *Pushing* below) |
 
