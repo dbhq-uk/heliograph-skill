@@ -134,7 +134,7 @@ reads the logs. What you decide is which question to ask next.
 | | |
 |---|---|
 | `run.sh` | the step runner. The operator's one command |
-| `agent.sh` | the unattended loop: watches for a request, runs it, pushes |
+| `agent.sh` | the unattended loop: watches for a request, runs it, pushes. Cancellable mid-run |
 | `caprun.sh` | wrap any ad-hoc command in the same capture and push |
 | `caplib.sh` | the shared capture, log and push functions |
 | `secret.sh` | carry a value the *other* way, as ciphertext, when the far side needs one |

@@ -58,12 +58,23 @@ them may be wasted by tooling that only reports success.
 lets you run `./steps/foo.sh` straight to a terminal while writing it. There is
 one implementation of the capture pattern, in `caplib.sh`. Do not fork it.
 
-**4. Read-only until earned, and gated twice.** A step that changes state is
-listed in `run.sh`'s `CONFIRM=yes` gate, so a stale `DEFAULT_STEP` can never do
-damage on its own, and `agent.sh` refuses it unless started with
-`--allow-actions`. Both gates, deliberately: an unattended loop that can apply
-infrastructure because a file changed is a different proposition from one that
-only reads. Never make a state-changing step the default.
+**4. Read-only until earned, and gated per request.** A step that changes state
+is listed in `run.sh`'s `CONFIRM=yes` gate, so a stale `DEFAULT_STEP` can never
+do damage on its own, and `agent.sh` recognises one by name (`ACTION_STEPS`) and
+by the env the request passes (`ACTION_ENV`) - the second because a diagnostic
+step that only writes once `env: APPLY=1` is set would otherwise sail through.
+Both gates, deliberately: an unattended loop that can apply infrastructure
+because a file changed is a different proposition from one that only reads.
+
+`ALLOW_ACTIONS` defaults to **1**, and that is a considered position rather than
+a relaxation. It was a flag typed once at agent start, often days before the
+request it gated, so forgetting it surfaced as a silent `refused` long after the
+request was pushed - a wasted round trip, which is the thing this repo exists to
+prevent. The gates that actually stand between a request and a change are the
+per-request ones, and they are unchanged. `--no-actions` (or `ALLOW_ACTIONS=0`)
+still refuses outright, for a loop that must never write.
+
+Never make a state-changing step the default.
 
 **5. The transport repo is private, and separate.** Captured logs are committed
 to it. `cap_redact` masks the obvious shapes and is a safety net, not a

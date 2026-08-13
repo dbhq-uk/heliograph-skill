@@ -8,6 +8,11 @@
 #   step  which step to run. Blank = whatever DEFAULT_STEP is in run.sh.
 #   env   extra environment for the run, e.g. `CONFIRM=yes` or `TARGET_REPO=/x`.
 #   stop  `yes` makes the agent exit cleanly after its current run.
+#   cancel `yes` kills the step running RIGHT NOW (or name an id to cancel only
+#         that one). The agent stays responsive while a step runs, so a slow or
+#         wrong run no longer has to be waited out or Ctrl-C'd on the far side.
+#         A value already here when a step starts is ignored - only a change is
+#         an instruction, so a leftover cancel cannot reap the next run.
 #   note  free text for whoever reads this next. Ignored by the agent.
 #
 # On main this file is the template - an empty `id` means the agent starts up
@@ -16,5 +21,6 @@
 id:
 step:
 env:
+cancel:
 stop:
 note:
