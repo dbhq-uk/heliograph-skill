@@ -6,6 +6,54 @@ Two runners, one library. A **runner** owns the log file, the timestamps and the
 treatment from `./run.sh foo` without changing a line.
 
 `agent.sh` sits above both: it decides *when* a runner runs, and nothing else.
+`start.sh` sits above that: it decides *whether this machine can run one at all*.
+
+---
+
+## `start.sh` - the first command on a new machine
+
+```bash
+./start.sh                     # check this machine, then run the agent
+./start.sh --check             # check only, change nothing, exit
+./start.sh --branch task/foo   # check that branch out first
+./start.sh -- --once           # everything after -- goes to agent.sh
+```
+
+`agent.sh` decides *when* a runner runs. `start.sh` decides *whether this machine
+can run one at all*, and owns nothing else: no log, no push, like `secret.sh`.
+
+It answers two questions that were previously answered by a failed round trip.
+
+**Can this machine produce a usable capture?** `sed -u` and `base64 -w0` are
+GNU-only spellings the toolkit depends on, and until now that was prose in a
+README. A busybox `sed` does not fail loudly: the capture still runs and every
+line carries the same timestamp, which reads like a working log while destroying
+the single property these logs exist for. `start.sh` refuses to start the agent on
+one, and says what to install.
+
+**Can git push from here?** A token that authenticates against the host's REST API
+says nothing about the git path, and read access says nothing about write access.
+It runs `ls-remote`, then `push --dry-run` with an explicit refspec so the remote
+is contacted even when there is nothing to send. The failure it prevents is an
+hour-long step that captures perfect evidence and cannot deliver it.
+
+It also reports which credential is in force, by mechanism and length, **never by
+value**: `cap_auth_describe` shares one precedence list with `_cap_auth_header`, so
+what it reports cannot disagree with what git uses.
+
+`--check` changes nothing at all: no fetch, no checkout, no pull. It is what gets
+run on a node where nobody is permitted to alter anything yet, so the answer to
+"will this work here" can be had before asking for permission.
+
+**It does not clone**, because it ships inside the transport repo and the clone has
+already happened by the time it runs. **It installs nothing**, which is what lets it
+run where installing is forbidden.
+
+| exit | |
+|---|---|
+| 0 | clear, or `--check` and clear |
+| 1 | a blocking problem, named, with what to do about it |
+| 2 | a usage error |
 
 ---
 

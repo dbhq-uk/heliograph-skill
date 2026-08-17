@@ -23,6 +23,7 @@ skills/heliograph/references/       # method, runner reference, step-writing, tr
 skills/heliograph/scripts/          # bootstrap.sh - installs the toolkit into a transport repo
 skills/heliograph/toolkit/          # what gets copied out: run.sh, agent.sh, caplib.sh, secret.sh, lib/, steps/
 install.sh / install-codex.sh       # local symlink installers (Claude / Codex)
+tests/                              # plain-bash assertions; run ./tests/run-tests.sh
 ```
 
 **`toolkit/` is a payload, not a library this repo runs.** Nothing in it is
@@ -114,6 +115,7 @@ bootstrapping into a repo that holds anything else.
 bash -n install.sh install-codex.sh
 find skills -name '*.sh' -exec bash -n {} +
 claude plugin validate .
+./tests/run-tests.sh
 shellcheck skills/heliograph/toolkit/*.sh skills/heliograph/toolkit/lib/*.sh   # if installed
 ```
 
@@ -130,5 +132,8 @@ copy:
 - A step that exits non-zero still writes the footer, still reports the real exit
   code, and still gets committed.
 - `./run.sh <a step that does not exist>` exits 2 having written nothing.
+- `./start.sh --check` from a bootstrapped copy names every blocking problem and
+  what to do about each. A preflight line that reports a problem without saying
+  what to do about it is a defect: the person reading it usually cannot ask you.
 
 Skipping those because CI is green is how the constraints get broken.

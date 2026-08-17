@@ -25,13 +25,17 @@ than the situations the skill claims to serve:
 Two decisions make the rest cheap.
 
 **One entry point, five callers.** There is no single answer to "I have a shell
-on the far side, now what". The operator clones, changes directory, checks out a
-branch, and runs `./agent.sh`; each new runtime would reimplement that sequence
-slightly differently. `toolkit/start.sh` owns it once, and the container
+on the far side, now what". `toolkit/start.sh` owns it once, and the container
 entrypoint, the Cloud Shell one-liner, the ACI command line and the PowerShell
 launcher all become callers rather than parallel implementations. This is the
 same separation the toolkit already keeps between `agent.sh` (decides *when*) and
 `run.sh` (owns the log): `start.sh` decides *where*, and owns nothing else.
+
+**It does not clone.** `start.sh` ships inside the transport repo, so by the time
+it runs the clone has already happened. The container entrypoint owns the clone,
+in about twenty lines, and then calls the repo's own `start.sh`. Putting the clone
+in `start.sh` would mean two copies of the file, one baked into the image and one
+in the repo, and no clear answer about which is authoritative.
 
 **Everything the far side needs arrives over git.** The Dockerfile, the bicep,
 the package payloads and the PowerShell launcher all live under `toolkit/`, so
@@ -74,6 +78,15 @@ put on the repo". For a token, the source and the length only: a token mangled o
 truncated by an ARM template parameter is a real failure mode, and the length
 settles it without printing a secret into a log that gets committed.
 
+The header travels to git through the environment rather than the command line.
+`git -c http.extraHeader=...` puts the credential in `/proc/<pid>/cmdline`, which
+is world readable, so any other user on the control node can take it from `ps`;
+the environment is owner-only. Below git 2.31, or when the version cannot be read,
+there is no environment route and `cap_git` falls back to `-c`. It is less
+exposure rather than none: root, a core dump and a debugger all still see the
+value, which is why the advice remains a short-lived, narrowly scoped credential
+and SSH wherever possible.
+
 **It measures rather than assumes.** `transport.md` already records the trap: a
 token that works against the host's REST API tells you nothing about whether git
 can authenticate, because they are different credentials on different paths.
@@ -81,12 +94,11 @@ can authenticate, because they are different credentials on different paths.
 agent if that fails, naming the branch of the table it took and what to fix.
 
 Read access is not write access, and the expensive failure is an agent that polls
-happily for an hour, captures a perfect log, and cannot push it. `start.sh` should
-also prove write access before handing over. `git push --dry-run` is the candidate,
-but whether it contacts the server when there is nothing to push needs verifying
-during implementation rather than assuming: if it short-circuits locally, the
-fallback is to push the `agent/status` transition that `start.sh` is about to
-cause anyway, and treat that as the proof.
+happily for an hour, captures a perfect log, and cannot push it. `start.sh` proves
+write access with `git push --dry-run origin HEAD:refs/heads/<branch>`. The
+explicit refspec is what makes this reliable: git contacts the remote to discover
+refs before deciding what to send, so the credential is exercised even when there
+is nothing to push.
 
 ## The PR ladder
 
@@ -117,6 +129,7 @@ its place by being a failure that is currently silent or misleading.
 | bash 4+ | the toolkit's baseline, stated in AGENTS.md |
 | `git`, and its version | git is the transport; without it nothing works |
 | `sed -u` is honoured | **the load-bearing one.** `sed -u` is what keeps the capture unbuffered so each line is stamped when produced. busybox `sed` has no `-u`. Today this is prose in a README, and breaking it produces a log where every line carries the same time, which is worse than no timestamp because it looks like one |
+| `base64 -w0` is honoured | GNU-only, and `caplib.sh` uses it to build the HTTPS auth header. A BSD `base64` wraps its output and the header is silently malformed |
 | `sha256sum` present | `agent.sh` uses it for the self-update check and swallows failure with `2>/dev/null`, so on a machine without it self-update silently never happens and a pushed fix to `agent.sh` never takes effect. Surfacing this is a finding in its own right |
 | `date -u`, `wc`, `ls -t`, `hostname` | GNU spellings the capture and the status pushes assume |
 | `setsid` | optional. `agent.sh` falls back to `set -m`; report which path cancel will take |
@@ -124,9 +137,10 @@ its place by being a failure that is currently silent or misleading.
 | `ops-logs/` writable | a capture that cannot write its log fails at the worst moment |
 | current UTC time, reported | a skewed clock makes every timestamp in every log misleading. Report, do not fail: only the reader can judge it |
 
-Then, in order: resolve the transport repo (clone if absent, `pull --rebase` if
-present, idempotent and safe to re-run), check out the requested branch, resolve
-and verify the credential as above, and `exec ./agent.sh "$@"`.
+Then, in order: resolve and verify the credential as above, check out the
+requested branch if one was given, `pull --rebase` to bring the checkout up to
+date (idempotent and safe to re-run), and `exec ./agent.sh "$@"`. No step here
+clones: the repo is already on disk by the time `start.sh` runs.
 
 **What it must not do.** It never resolves a conflict, never forces a push, never
 discards the operator's local work, and never prints a credential. It installs

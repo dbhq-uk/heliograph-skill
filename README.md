@@ -133,6 +133,7 @@ reads the logs. What you decide is which question to ask next.
 
 | | |
 |---|---|
+| `start.sh` | the first command on a new machine: proves it can capture and push, then starts the agent |
 | `run.sh` | the step runner. The operator's one command |
 | `agent.sh` | the unattended loop: watches for a request, runs it, pushes. Cancellable mid-run |
 | `caprun.sh` | wrap any ad-hoc command in the same capture and push |

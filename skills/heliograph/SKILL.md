@@ -87,8 +87,9 @@ before the first one. Every rule in it cost a round trip.
 
 ## 4. Drive it
 
-Ask the operator to run `./agent.sh` once, then stop relaying runs. It watches
-`agent/request` and runs when the `id:` changes:
+Ask the operator to run `./start.sh` once, then stop relaying runs. It checks that
+the machine can capture properly and that git can push from it, then starts the
+agent, which watches `agent/request` and runs when the `id:` changes:
 
 ```
 you       edit agent/request (new id), push ───────────────▶ transport repo
@@ -96,6 +97,9 @@ agent     picks it up within seconds, runs ./run.sh
           pushes agent/status, then the log ───────────────▶ transport repo
 you       poll, read the log, decide the next step ◀────────
 ```
+
+If they want to know whether the machine will work before committing to anything,
+`./start.sh --check` answers that and changes nothing.
 
 The trigger is the **`id`**, not a new commit: docs and step edits land
 constantly and would otherwise fire runs nobody asked for. `stop: yes` ends the
