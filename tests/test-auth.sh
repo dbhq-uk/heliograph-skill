@@ -52,10 +52,6 @@ assert_eq "./.git-token is read when no env token is set" \
   "$(basic "" from-cwd)" \
   "$(hdr "$TMP/dotfile")"
 
-assert_eq "only the first line of a token file is used" \
-  "$(basic "" from-cwd)" \
-  "$(hdr "$TMP/dotfile")"
-
 assert_eq "GIT_TOKEN beats ./.git-token" \
   "$(basic "" from-env)" \
   "$(hdr "$TMP/dotfile" GIT_TOKEN=from-env)"
@@ -72,6 +68,17 @@ mkdir -p "$TMP/homefile/work"
 assert_eq "~/.git-token is the last resort" \
   "$(basic "" from-home)" \
   "$( cd "$TMP/homefile/work" && env -i HOME="$TMP/homefile" PATH="$PATH" \
+        bash -c ". \"$TOOLKIT/caplib.sh\"; _cap_auth_header" )"
+
+# Both present and different, which the cases above cannot distinguish because
+# hdr() points HOME at the same directory it runs in. This is the link Task 2's
+# refactor is most likely to get wrong.
+mkdir -p "$TMP/both/work"
+printf 'from-home\n' > "$TMP/both/.git-token"
+printf 'from-cwd\n'  > "$TMP/both/work/.git-token"
+assert_eq "./.git-token beats ~/.git-token when both exist and differ" \
+  "$(basic "" from-cwd)" \
+  "$( cd "$TMP/both/work" && env -i HOME="$TMP/both" PATH="$PATH" \
         bash -c ". \"$TOOLKIT/caplib.sh\"; _cap_auth_header" )"
 
 mkdir -p "$TMP/emptyfile"
