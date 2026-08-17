@@ -188,11 +188,20 @@ _cap_token_source() {
 
 _cap_auth_header() {
   local src tok=""
-  src="$(_cap_token_source)"
+  # The sentinel round-trip (append a byte, then strip it) is deliberate: a bare
+  # $(_cap_token_source) would let command substitution eat a trailing newline
+  # that is part of a GIT_TOKEN_FILE path, silently turning a valid file: source
+  # into a no-op and pushing unauthenticated. Keep this identical at both call
+  # sites below.
+  src="$(_cap_token_source; printf x)"; src="${src%x}"
   case "$src" in
     header:*) printf 'Authorization: %s' "$GIT_AUTH_HEADER"; return 0 ;;
     env:*)    tok="$GIT_TOKEN" ;;
     file:*)   tok="$(sed -n '1p' "${src#file:}")" ;;
+    # Also reached when a variable this needs (e.g. $HOME, under `set -u`) is
+    # unset: the inner _cap_token_source subshell aborts, src comes back empty,
+    # and we land here. Status is deliberately 0 either way - stdout being empty
+    # is the signal callers must use; do not rely on $? to detect "no credential".
     *)        return 0 ;;
   esac
   [ -z "$tok" ] && return 0
@@ -208,12 +217,22 @@ _cap_auth_header() {
 # is read aloud, pasted into tickets, and printed above a log that gets committed.
 cap_auth_describe() {
   local src tok=""
-  src="$(_cap_token_source)"
+  src="$(_cap_token_source; printf x)"; src="${src%x}"
   case "$src" in
     header:*) printf 'GIT_AUTH_HEADER, used verbatim (%s chars)' "${#GIT_AUTH_HEADER}"; return 0 ;;
     env:*)    tok="$GIT_TOKEN"; printf 'GIT_TOKEN from the environment (%s chars)' "${#tok}"; return 0 ;;
     file:*)   tok="$(sed -n '1p' "${src#file:}")"
-              printf '%s (%s chars)' "${src#file:}" "${#tok}"; return 0 ;;
+              # _cap_auth_header sends no header at all when the file's first
+              # line is empty (a directory, or `echo $UNSET_VAR >.git-token`).
+              # Reporting "(0 chars)" here would tell an operator the token IS
+              # in force when git is actually running with none - exactly the
+              # disagreement this function exists to prevent.
+              if [ -z "$tok" ]; then
+                printf '%s, but its first line is empty, so no header is sent' "${src#file:}"
+              else
+                printf '%s (%s chars)' "${src#file:}" "${#tok}"
+              fi
+              return 0 ;;
   esac
   printf 'none, so git is used unmodified - correct for an SSH remote'
 }

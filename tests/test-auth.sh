@@ -124,4 +124,34 @@ assert_eq "describe: never prints the token itself" \
 assert_contains "describe: names the file it read" \
   ".git-token" "$(desc "$TMP/dotfile")"
 
+# --- fix: a trailing newline in a GIT_TOKEN_FILE path must survive -----------
+# Regression test for a review finding: a bare $(_cap_token_source) lets command
+# substitution strip a trailing newline that is part of the file's own name,
+# silently turning a valid file: source into no header at all - a push that
+# should be authenticated goes out bare instead.
+#
+# (A direct check of _cap_token_source's raw stdout can't observe this: the
+# test's own "$(...)" capture strips a trailing newline exactly the way the
+# bug did, so it would pass whether or not the fix is in place. The end-to-end
+# check below is the one that actually distinguishes fixed from broken - the
+# broken form builds the wrong path, sed can't find it, and the header comes
+# back empty instead of Basic.)
+mkdir -p "$TMP/trailingnl"
+nlfile="$TMP/trailingnl/token"$'\n'
+printf 'from-nl-path\n' > "$nlfile"
+assert_eq "GIT_TOKEN_FILE with a trailing newline in its name still authenticates" \
+  "$(basic "" from-nl-path)" \
+  "$(hdr "$TMP/empty" GIT_TOKEN_FILE="$nlfile")"
+
+# --- fix: describe must not claim a header that _cap_auth_header will not send
+# Regression test for a review finding: the two functions agree on WHICH
+# mechanism is selected but, before this fix, not on whether a header is
+# actually emitted. An empty first line makes _cap_auth_header send nothing;
+# describe must say so rather than reporting "(0 chars)", which reads as "the
+# token is in force" to an operator staring at a failed push.
+assert_contains "describe: empty token file says no header is sent, not a fake length" \
+  "no header is sent" "$(desc "$TMP/emptyfile")"
+assert_eq "describe: empty token file never claims a (0 chars) token is in force" \
+  "" "$(desc "$TMP/emptyfile" | grep -o '(0 chars)')"
+
 t_summary
