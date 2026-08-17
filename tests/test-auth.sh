@@ -113,8 +113,16 @@ assert_eq "source: GIT_TOKEN_FILE beats ./.git-token" \
 # real failure mode and this settles it; the value is never printed, because this
 # output is read aloud, pasted into tickets, and sits above a log that gets
 # committed.
-assert_contains "describe: SSH case says git is unmodified" \
-  "none" "$(desc "$TMP/empty")"
+# Deliberately NOT "the SSH case". cap_auth_describe cannot see the remote, so it
+# names what it looked for and leaves the conclusion to the caller: it used to
+# assert "correct for an SSH remote", which on an https remote with no token put an
+# `ok` claiming the credential was right directly above a FAIL telling the reader
+# to check the credential. start.sh knows the scheme and adds the advice.
+assert_contains "describe: no credential names what was looked for, without opining on the scheme" \
+  "none: no GIT_AUTH_HEADER, GIT_TOKEN, GIT_TOKEN_FILE or .git-token" \
+  "$(desc "$TMP/empty")"
+assert_eq "describe: and does not claim a scheme it cannot see" "" \
+  "$(desc "$TMP/empty" | grep -o 'SSH remote')"
 assert_contains "describe: names GIT_TOKEN" \
   "GIT_TOKEN" "$(desc "$TMP/empty" GIT_TOKEN=abcd)"
 assert_contains "describe: reports the length" \

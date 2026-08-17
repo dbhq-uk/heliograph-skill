@@ -180,8 +180,10 @@ cap_footer() {
 #   GIT_TOKEN_USER   Basic username. Default empty, which is what Azure DevOps
 #                    wants; GitHub wants x-access-token, GitLab oauth2
 #
-# Prints nothing when none of them is set, in which case git is used unmodified
-# - which is the SSH case, and is correct.
+# Prints nothing when none of them is set, in which case git is used unmodified.
+# That is right for an SSH remote and wrong for an https one, and nothing in this
+# file can tell which: the caller knows the remote's scheme, so the caller draws
+# that conclusion. See cap_auth_describe.
 
 # Which mechanism supplies the credential, by NAME. One precedence list, used
 # both to build the header and to report it: a report that could disagree with
@@ -247,7 +249,13 @@ cap_auth_describe() {
               fi
               return 0 ;;
   esac
-  printf 'none, so git is used unmodified - correct for an SSH remote'
+  # Scheme-neutral on purpose. This function cannot see the remote, so it named
+  # what it looked for and left the conclusion to the caller. It used to assert
+  # "correct for an SSH remote", which on an https remote with no token put an
+  # `ok` line saying the credential was right immediately above a FAIL telling
+  # the reader to check the credential - the commonest first-run state the
+  # preflight exists to diagnose, reported as two contradictions.
+  printf 'none: no GIT_AUTH_HEADER, GIT_TOKEN, GIT_TOKEN_FILE or .git-token, so git is used unmodified'
 }
 
 # git 2.31 (March 2021) honours GIT_CONFIG_COUNT. Older git ignores it SILENTLY,

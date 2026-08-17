@@ -154,6 +154,31 @@ assert_contains "the token mechanism is named" "GIT_TOKEN" "$OUT"
 assert_contains "the token length is reported" "4 chars" "$OUT"
 assert_eq "the token value is never printed" "" "$(printf '%s' "$OUT" | grep -o abcd)"
 
+# --- https with no credential at all: the commonest first-run state ------------
+# The read check FAILs with "check the credential reported above"; the token line
+# above it used to read `ok  token  none, so git is used unmodified - correct for
+# an SSH remote` on an https remote. Two contradictory lines, neither actionable.
+make_repo "$TMP/notoken"
+( cd "$TMP/notoken" && git remote set-url origin https://example.invalid/x.git ) >/dev/null 2>&1
+bare_env=( env -u GIT_AUTH_HEADER -u GIT_TOKEN -u GIT_TOKEN_FILE HOME="$TMP/notoken" )
+RC=0
+OUT="$( cd "$TMP/notoken" && "${bare_env[@]}" ./start.sh --check 2>&1 )" || RC=$?
+assert_contains "no credential on an https remote is a warn, not an ok" "warn  token" "$OUT"
+assert_eq "and it no longer calls that correct for an SSH remote" "" \
+  "$(printf '%s' "$OUT" | grep -o 'correct for an SSH remote')"
+assert_contains "and it names what was looked for" \
+  "no GIT_AUTH_HEADER, GIT_TOKEN, GIT_TOKEN_FILE or .git-token" "$OUT"
+assert_contains "and says what to do about it on an https remote" "ssh://" "$OUT"
+
+# The status must be DERIVED from the description, not asserted over it: describe
+# reports "so no header is sent" for a token file that is unreadable or whose
+# first line is empty, and git then runs with no credential at all.
+: > "$TMP/notoken/.git-token"
+RC=0
+OUT="$( cd "$TMP/notoken" && "${bare_env[@]}" ./start.sh --check 2>&1 )" || RC=$?
+assert_contains "an empty token file is a warn, not an ok" "warn  token" "$OUT"
+assert_contains "and the line says no header is sent" "no header is sent" "$OUT"
+
 # --- a token embedded in the remote URL is a credential too --------------------
 # transport.md records that people arrive with this form, git redacts userinfo in
 # its own messages, and cap_redact does not catch this shape. The remote line
@@ -179,6 +204,52 @@ assert_contains "an scp-form ssh remote is printed unaltered" \
   "git@git.invalid:p/t.git" "$OUT"
 assert_contains "and a local path remote is too" \
   "$TMP/good.origin.git" "$( cd "$TMP/good" && ./start.sh --check 2>&1 )"
+
+# --- ssh-add's exit status, not its stdout ------------------------------------
+# With a live agent holding no keys, ssh-add prints "The agent has no identities."
+# on stdout and exits 1, so `awk '{print $2}'` produced
+# `ok  ssh key  agent offers: agent`: an ok line for the transport this skill
+# recommends, in the state where the key is missing. 0 with identities, 1 for
+# agent-but-empty, 2 for no agent, and the operator's next move differs between
+# the last two, so all three are told apart.
+make_repo "$TMP/sshkey"
+( cd "$TMP/sshkey" && git remote set-url origin git@example.invalid:x/y.git ) >/dev/null 2>&1
+mkdir -p "$TMP/sshbin"
+fake_ssh_add() {  # fake_ssh_add <exit-status> <stdout-line>
+  cat > "$TMP/sshbin/ssh-add" <<EOF
+#!/bin/sh
+echo "$2"
+exit $1
+EOF
+  chmod +x "$TMP/sshbin/ssh-add"
+}
+ssh_out() {
+  ( cd "$TMP/sshkey" && PATH="$TMP/sshbin:$PATH" \
+      GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=5' ./start.sh --check 2>&1 )
+}
+
+fake_ssh_add 0 "256 SHA256:AAAA0000 the-key (ED25519)"
+OUT="$(ssh_out)"
+assert_contains "ssh-add exit 0: the fingerprint is what gets reported" \
+  "ok    ssh key       agent offers: SHA256:AAAA0000" "$OUT"
+
+fake_ssh_add 1 "The agent has no identities."
+OUT="$(ssh_out)"
+assert_contains "ssh-add exit 1: an empty agent is a warn, not an ok" "warn  ssh key" "$OUT"
+assert_eq "ssh-add exit 1: 'agent' is never mistaken for a fingerprint" "" \
+  "$(printf '%s' "$OUT" | grep -o 'agent offers: agent')"
+assert_contains "ssh-add exit 1: and it says to add a key" "ssh-add <path-to-key>" "$OUT"
+
+fake_ssh_add 2 "Could not open a connection to your authentication agent."
+OUT="$(ssh_out)"
+assert_contains "ssh-add exit 2: no agent at all is a warn" "warn  ssh key" "$OUT"
+assert_contains "ssh-add exit 2: and the action is a different one" "ssh -A" "$OUT"
+assert_contains "ssh-add exit 2: naming the variable that decides it" "SSH_AUTH_SOCK" "$OUT"
+
+fake_ssh_add 127 "ssh-add: not found"
+OUT="$(ssh_out)"
+assert_contains "an unexpected ssh-add status says so rather than guessing" \
+  "ssh-add exited 127" "$OUT"
 
 # --- the handover ------------------------------------------------------------
 # start.sh must exec agent.sh rather than run it as a child, so that the

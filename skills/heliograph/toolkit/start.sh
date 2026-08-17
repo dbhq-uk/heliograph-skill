@@ -136,7 +136,7 @@ preflight() {
 # key is useless against an https:// remote and a token useless against git@.
 # So branch on the scheme, then report the mechanism without its value.
 credential() {
-  local url scheme fps
+  local url scheme fps rc desc st
   url="$(git remote get-url origin 2>/dev/null)"
   if [ -z "$url" ]; then
     report FAIL remote "no remote named 'origin'. Git is the transport, so there is nowhere to push a log. Add one: git remote add origin <url>"
@@ -158,14 +158,40 @@ credential() {
 
   case "$scheme" in
     ssh)
-      fps="$(ssh-add -l 2>/dev/null | awk '{print $2}' | tr '\n' ' ')"
-      if [ -n "$fps" ]; then
-        report ok "ssh key" "agent offers: $fps"
-      else
-        report warn "ssh key" "no key in an agent. A key in ~/.ssh may still work, and the read and write checks below are what settle it"
-      fi
+      # ssh-add's EXIT STATUS is the answer here, not its stdout. With a live
+      # agent holding no keys it prints "The agent has no identities." and exits
+      # 1, and piping that through `awk '{print $2}'` produced
+      # `ok  ssh key  agent offers: agent` - an ok line for the transport this
+      # skill recommends, in the state where the key is missing.
+      #
+      # 0 keys present, 1 agent reachable but empty, 2 no agent at all. The
+      # operator's next move differs between the last two, so all three are told
+      # apart rather than collapsed into "no key".
+      fps="$(ssh-add -l 2>/dev/null)"; rc=$?
+      case "$rc" in
+        0) report ok "ssh key" "agent offers: $(printf '%s\n' "$fps" | awk '{print $2}' | tr '\n' ' ')" ;;
+        1) report warn "ssh key" "an ssh agent is reachable but holds no keys, so nothing can authenticate through it. Run 'ssh-add <path-to-key>'. A key in ~/.ssh may still work: the read and write checks below settle it" ;;
+        2) report warn "ssh key" "no ssh agent is reachable (SSH_AUTH_SOCK is ${SSH_AUTH_SOCK:-unset}). Forward one with 'ssh -A', or start one here with 'eval \$(ssh-agent)' then 'ssh-add'. A key in ~/.ssh may still work: the read and write checks below settle it" ;;
+        *) report warn "ssh key" "ssh-add exited $rc, so which key is offered is unknown - it may not be installed. Install openssh-client to see the fingerprint; the read and write checks below are what settle it" ;;
+      esac
       ;;
-    https) report ok token "$(cap_auth_describe)" ;;
+    https)
+      # cap_auth_describe cannot see the remote, so it names what it looked for
+      # and opines on nothing. start.sh DOES know the scheme, so the advice
+      # belongs here - and the status is derived from the description rather than
+      # asserted over it. "none" on an https remote is not an ok: it is the
+      # commonest single reason the read check below fails.
+      desc="$(cap_auth_describe)"
+      st=ok
+      case "$desc" in
+        none*)
+          st=warn
+          desc="$desc. An https remote needs one of those. Set GIT_TOKEN, or re-point origin at ssh:// and use an agent key, which references/transport.md recommends" ;;
+        *"no header is sent"*)
+          st=warn ;;
+      esac
+      report "$st" token "$desc"
+      ;;
     other) report warn remote "unrecognised scheme, so the checks below are what settle it" ;;
   esac
 }
