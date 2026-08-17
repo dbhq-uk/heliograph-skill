@@ -30,14 +30,6 @@ assert_contains() {
   esac
 }
 
-# assert_status <label> <expected-rc> <cmd...>
-assert_status() {
-  local label="$1" want="$2"; shift 2
-  local rc=0
-  "$@" >/dev/null 2>&1 || rc=$?
-  assert_eq "$label" "$want" "$rc"
-}
-
 t_summary() {
   printf '\n%s: %s passed, %s failed\n' "${0##*/}" "$T_PASS" "$T_FAIL"
   [ "$T_FAIL" = "0" ]
