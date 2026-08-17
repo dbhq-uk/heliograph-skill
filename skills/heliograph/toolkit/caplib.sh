@@ -271,8 +271,29 @@ cap_git() {
   if [ -z "$hdr" ]; then
     git "$@"
   elif _cap_git_env_config; then
-    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader GIT_CONFIG_VALUE_0="$hdr" \
-      git "$@"
+    # APPEND at the next free index rather than hard-coding slot 0: an operator
+    # on a locked-down control node may already export their own GIT_CONFIG_*
+    # (an ambient http.proxy, sslCAInfo, safe.directory) the same way. Slot 0
+    # would silently overwrite and truncate theirs off the list, and every
+    # authenticated push would start failing with a network error on a machine
+    # nobody can log into to diagnose. The numeric guard matters too: a garbage
+    # ambient count must fall back to 0 rather than feed a non-numeric index
+    # into GIT_CONFIG_KEY_<n>, which git would then ignore while still counting
+    # the slot.
+    #
+    # This goes through `env NAME=VALUE ... cmd` rather than a bash prefix
+    # assignment (`GIT_CONFIG_KEY_$n=... git "$@"`) because bash's assignment
+    # grammar requires the variable NAME to be a literal identifier in the
+    # source; built from $n it isn't recognised as an assignment at all, and
+    # bash instead tries to execute the literal string as a command. `env`
+    # parses its own NAME=VALUE arguments regardless, and still composes with
+    # (rather than replacing) the rest of the inherited environment.
+    local n="${GIT_CONFIG_COUNT:-0}"
+    case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    env "GIT_CONFIG_COUNT=$((n + 1))" \
+        "GIT_CONFIG_KEY_$n=http.extraHeader" \
+        "GIT_CONFIG_VALUE_$n=$hdr" \
+        git "$@"
   else
     git -c http.extraHeader="$hdr" "$@"
   fi

@@ -47,9 +47,10 @@ the command line. `git -c http.extraHeader=...` would put the credential in
 `/proc/<pid>/cmdline`, which is world readable, so any other user on the control
 node could read it out of `ps`. The environment is owner-only.
 
-Below git 2.31 there is no environment route, so `cap_git` falls back to `-c` and
-the exposure returns. `./start.sh --check` reports the git version, which is what
-tells you which of the two you are getting.
+Below git 2.31, or if the version cannot be read, there is no environment route,
+so `cap_git` falls back to `-c` and the exposure returns. `./start.sh --check`
+reports the git version, which is what tells you which of the two you are
+getting.
 
 Neither route hides the value from root, from a core dump, or from a debugger.
 This is transport for a credential that should be short lived and narrowly
