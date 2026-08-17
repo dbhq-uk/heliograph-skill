@@ -71,6 +71,48 @@ report() {
   printf '%-4s  %-12s  %s\n' "$status" "$label" "$*"
 }
 
+# git_detail <combined-output> - the line(s) of a git failure that name the cause
+#
+# `tail -1` was wrong here, and wrong in the two places most likely to fire on a
+# new machine. git's transport failures end on a wrapped continuation, so the
+# operator got the fragment and a double full stop:
+#
+#   FAIL  git read  ls-remote failed: and the repository exists.. Check the ...
+#
+# while "Permission denied (publickey)" or "Could not resolve hostname ..." - the
+# line that actually said what was wrong - was thrown away. `head -1` on its own
+# is not right either: the generic "fatal: Could not read from remote repository"
+# is emitted after the specific line, so it has to be dropped rather than ordered
+# around. Keep the lines that name a cause, in git's own order, drop that trailer
+# whenever something more specific was printed, and say so when there are more
+# than three rather than truncating silently.
+#
+# CRs are stripped because ssh writes its diagnostics with a trailing CR, which
+# inside a printf'd table redraws the line over itself.
+GIT_CAUSE_RE='^(fatal|error|warning|remote|ssh|hint: Updates):|^ ! \[|Permission denied|Could not resolve|Connection refused|Connection timed out'
+git_detail() {
+  local clean specific joined="" line total=0 shown=0
+  clean="$(printf '%s\n' "$1" | tr -d '\r')"
+  specific="$(printf '%s\n' "$clean" | grep -E "$GIT_CAUSE_RE" \
+                | grep -v 'Could not read from remote repository')"
+  [ -n "$specific" ] || specific="$(printf '%s\n' "$clean" | grep -E "$GIT_CAUSE_RE")"
+  [ -n "$specific" ] || specific="$(printf '%s\n' "$clean" | grep -v '^[[:space:]]*$')"
+  total="$(printf '%s\n' "$specific" | grep -c .)"
+  while IFS= read -r line; do
+    [ "$shown" -ge 3 ] && break
+    line="${line%"${line##*[![:space:]]}"}"   # right-trim
+    line="${line%.}"                          # the caller supplies the full stop
+    [ -n "$line" ] || continue
+    joined="${joined:+$joined; }$line"
+    shown=$((shown + 1))
+  done <<< "$specific"
+  [ "$total" -gt "$shown" ] && joined="$joined (+$((total - shown)) more line(s): run the command by hand to see them)"
+  # Never hand back an empty string: the caller interpolates this mid-sentence and
+  # "ls-remote failed: . Check ..." tells the reader nothing at all.
+  [ -n "$joined" ] || joined="git printed no diagnostic"
+  printf '%s' "$joined"
+}
+
 preflight() {
   if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
     report ok bash "$BASH_VERSION"
@@ -230,7 +272,7 @@ verify() {
   if out="$(cap_git ls-remote --heads origin 2>&1)"; then
     report ok "git read" "ls-remote returned $(printf '%s\n' "$out" | grep -c .) ref(s)"
   else
-    report FAIL "git read" "ls-remote failed: $(printf '%s\n' "$out" | tail -1). Check the remote URL and the credential reported above"
+    report FAIL "git read" "ls-remote failed: $(git_detail "$out"). Check the remote URL and the credential reported above"
     return 0
   fi
 
@@ -243,7 +285,7 @@ verify() {
     # fast-forward refusal is a statement about history, not about authorisation.
     report warn "git write" "the remote refused a fast-forward, so write access is unproven rather than denied. That is history, not the credential: the sync below pulls, and agent.sh keeps retrying. If it persists, run 'git pull --rebase' by hand"
   else
-    report FAIL "git write" "push --dry-run of HEAD:$WRITE_CHECK_REF was refused: $(printf '%s\n' "$out" | tail -1). The agent would capture logs it could not deliver. Check the credential reported above has write access and not just read; a remote that restricts which branch names may be created refuses this check too"
+    report FAIL "git write" "push --dry-run of HEAD:$WRITE_CHECK_REF was refused: $(git_detail "$out"). The agent would capture logs it could not deliver. Check the credential reported above has write access and not just read; a remote that restricts which branch names may be created refuses this check too"
   fi
 }
 

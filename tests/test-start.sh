@@ -143,6 +143,30 @@ assert_eq "a remote that refuses receive-pack blocks" "1" "$RC"
 assert_contains "read having passed is still reported, so the two are told apart" \
   "ok    git read" "$OUT"
 assert_contains "and the write failure says what to check" "write access" "$OUT"
+# `tail -1` handed over git's wrapped continuation instead. The remote's own words
+# are the diagnostic, and this is the FAIL most likely to fire on a new machine.
+assert_contains "and the remote's own refusal survives into the line" \
+  "not allowed to push code" "$OUT"
+
+# --- the diagnostic must survive, and tail -1 threw it away -------------------
+# git's transport failures end on a wrapped continuation ("...and the repository
+# exists."), so the operator got a fragment plus a double full stop while the line
+# that said what was wrong was discarded.
+make_repo "$TMP/badhost"
+( cd "$TMP/badhost" && git remote set-url origin git@nonexistent.invalid:x/y.git ) >/dev/null 2>&1
+RC=0
+OUT="$( cd "$TMP/badhost" \
+        && GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=5' ./start.sh --check 2>&1 )" || RC=$?
+assert_eq "an unreachable ssh host blocks" "1" "$RC"
+assert_contains "the line that named the cause survives" "Could not resolve hostname" "$OUT"
+assert_eq "the wrapped fragment no longer stands in for it" "" \
+  "$(printf '%s' "$OUT" | grep -o 'failed: and the repository exists')"
+assert_eq "and the double full stop is gone" "" \
+  "$(printf '%s' "$OUT" | grep -o '\.\. Check')"
+# ssh writes its diagnostics with a trailing CR, which inside a printf'd table
+# redraws the line over itself.
+assert_eq "no carriage return reaches the table" "" \
+  "$(printf '%s' "$OUT" | tr -dc '\r')"
 
 # --- an unreachable https remote exercises the token branch ------------------
 make_repo "$TMP/https"
