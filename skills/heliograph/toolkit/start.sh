@@ -230,7 +230,10 @@ fi
 if cap_git pull --rebase --quiet >/dev/null 2>&1; then
   report ok pull "up to date with origin"
 else
-  cap_git rebase --abort >/dev/null 2>&1
+  # Bare git, not cap_git: abort touches no network, and cap_git would put the
+  # auth header in this process's argv for nothing - visible to anyone else on
+  # the box via ps. Do not "helpfully" wrap it back up.
+  git rebase --abort >/dev/null 2>&1
   report warn pull "pull --rebase did not succeed, so the tree is being left alone. agent.sh will keep retrying"
 fi
 
