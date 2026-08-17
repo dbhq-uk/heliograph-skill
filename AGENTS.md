@@ -119,13 +119,12 @@ jq empty .claude-plugin/plugin.json
 ./tests/run-tests.sh
 ```
 
-CI runs all five, `shellcheck` included and over that same corpus, plus the
-`SKILL.md` frontmatter check, the em dash, hardcoded-install-path and
+CI runs all five over that same corpus, `bash -n` and `shellcheck` included, plus
+the `SKILL.md` frontmatter check, the em dash, hardcoded-install-path and
 probe-truncation greps, both installers, and an end-to-end capture through a
-bootstrapped copy. Two differences worth knowing: CI's `bash -n` sweep covers the
-root installers and `skills/` but not `tests/`, which it runs outright instead;
-and CI checks the manifest with `jq empty` rather than `claude plugin validate .`,
-which needs the Claude Code CLI, so run that separately if you have it.
+bootstrapped copy. One difference worth knowing: CI checks the manifest with `jq
+empty` rather than `claude plugin validate .`, which needs the Claude Code CLI, so
+run that separately if you have it.
 
 Be honest about what none of it covers: **nothing here exercises a capture against
 a real remote machine.** The behaviour that matters is what a log looks like after
