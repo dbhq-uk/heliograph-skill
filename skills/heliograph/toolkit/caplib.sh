@@ -169,20 +169,53 @@ cap_footer() {
 #
 # Prints nothing when none of them is set, in which case git is used unmodified
 # - which is the SSH case, and is correct.
+
+# Which mechanism supplies the credential, by NAME. One precedence list, used
+# both to build the header and to report it: a report that could disagree with
+# what git actually uses would be worse than no report at all.
+#
+# Prints exactly one of:
+#   header:GIT_AUTH_HEADER   env:GIT_TOKEN   file:<path>   none
+_cap_token_source() {
+  [ -n "${GIT_AUTH_HEADER:-}" ] && { printf 'header:GIT_AUTH_HEADER'; return 0; }
+  [ -n "${GIT_TOKEN:-}" ]       && { printf 'env:GIT_TOKEN'; return 0; }
+  local f
+  for f in "${GIT_TOKEN_FILE:-}" ./.git-token "$HOME/.git-token"; do
+    [ -n "$f" ] && [ -r "$f" ] && { printf 'file:%s' "$f"; return 0; }
+  done
+  printf 'none'
+}
+
 _cap_auth_header() {
-  if [ -n "${GIT_AUTH_HEADER:-}" ]; then
-    printf 'Authorization: %s' "$GIT_AUTH_HEADER"
-    return 0
-  fi
-  local tok="${GIT_TOKEN:-}" f
-  if [ -z "$tok" ]; then
-    for f in "${GIT_TOKEN_FILE:-}" ./.git-token "$HOME/.git-token"; do
-      [ -n "$f" ] && [ -r "$f" ] && { tok="$(sed -n '1p' "$f")"; break; }
-    done
-  fi
+  local src tok=""
+  src="$(_cap_token_source)"
+  case "$src" in
+    header:*) printf 'Authorization: %s' "$GIT_AUTH_HEADER"; return 0 ;;
+    env:*)    tok="$GIT_TOKEN" ;;
+    file:*)   tok="$(sed -n '1p' "${src#file:}")" ;;
+    *)        return 0 ;;
+  esac
   [ -z "$tok" ] && return 0
   printf 'Authorization: Basic %s' \
     "$(printf '%s:%s' "${GIT_TOKEN_USER:-}" "$tok" | base64 -w0)"
+}
+
+# cap_auth_describe - which credential is in force, for a human. NEVER its value.
+#
+# The length is here on purpose: a token truncated by an ARM template parameter,
+# or carrying a stray newline from a copy and paste, is a real failure mode and
+# the length settles it in one line. The value is not, and must not be: this text
+# is read aloud, pasted into tickets, and printed above a log that gets committed.
+cap_auth_describe() {
+  local src tok=""
+  src="$(_cap_token_source)"
+  case "$src" in
+    header:*) printf 'GIT_AUTH_HEADER, used verbatim (%s chars)' "${#GIT_AUTH_HEADER}"; return 0 ;;
+    env:*)    tok="$GIT_TOKEN"; printf 'GIT_TOKEN from the environment (%s chars)' "${#tok}"; return 0 ;;
+    file:*)   tok="$(sed -n '1p' "${src#file:}")"
+              printf '%s (%s chars)' "${src#file:}" "${#tok}"; return 0 ;;
+  esac
+  printf 'none, so git is used unmodified - correct for an SSH remote'
 }
 
 # cap_git <git-args...> - git, with the auth header attached when one is configured.

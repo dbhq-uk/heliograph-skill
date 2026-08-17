@@ -224,6 +224,7 @@ chain or gate on.
 | `cap_footer <out> <rc>` | finished-UTC / exit-code / OK-or-FAILED block |
 | `cap_redact` | stdin filter masking `password=`, `Bearer ...`, `Basic ...`, private keys. Honours `REDACT=0` |
 | `cap_git <args...>` | `git`, with an auth header attached when a token is configured (HTTPS remotes only) |
+| `cap_auth_describe` | which credential mechanism is in force, by name and length. Never the value |
 | `cap_push <out> <msg>` | stage **only** that file, commit, `pull --rebase`, push. On failure prints the local path instead of dying - a failed push must never lose the log |
 
 ### Why every line is timestamped

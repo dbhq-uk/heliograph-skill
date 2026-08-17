@@ -86,4 +86,42 @@ mkdir -p "$TMP/emptyfile"
 assert_eq "an empty token file yields no header rather than an empty Basic value" \
   "" "$(hdr "$TMP/emptyfile")"
 
+# --- the single precedence list, and the report built from it ----------------
+
+src() {
+  local wd="$1"; shift
+  ( cd "$wd" && env -i HOME="$wd" PATH="$PATH" "$@" \
+      bash -c ". \"$TOOLKIT/caplib.sh\"; _cap_token_source" )
+}
+desc() {
+  local wd="$1"; shift
+  ( cd "$wd" && env -i HOME="$wd" PATH="$PATH" "$@" \
+      bash -c ". \"$TOOLKIT/caplib.sh\"; cap_auth_describe" )
+}
+
+assert_eq "source: nothing set" "none" "$(src "$TMP/empty")"
+assert_eq "source: GIT_AUTH_HEADER" "header:GIT_AUTH_HEADER" \
+  "$(src "$TMP/empty" GIT_AUTH_HEADER="Bearer x")"
+assert_eq "source: GIT_TOKEN" "env:GIT_TOKEN" "$(src "$TMP/empty" GIT_TOKEN=tok)"
+assert_eq "source: ./.git-token" "file:./.git-token" "$(src "$TMP/dotfile")"
+assert_eq "source: GIT_TOKEN_FILE beats ./.git-token" \
+  "file:$TMP/dotfile/named-token" \
+  "$(src "$TMP/dotfile" GIT_TOKEN_FILE="$TMP/dotfile/named-token")"
+
+# The description names the mechanism and the length. The length is included
+# because a token truncated by an ARM template parameter or a stray newline is a
+# real failure mode and this settles it; the value is never printed, because this
+# output is read aloud, pasted into tickets, and sits above a log that gets
+# committed.
+assert_contains "describe: SSH case says git is unmodified" \
+  "none" "$(desc "$TMP/empty")"
+assert_contains "describe: names GIT_TOKEN" \
+  "GIT_TOKEN" "$(desc "$TMP/empty" GIT_TOKEN=abcd)"
+assert_contains "describe: reports the length" \
+  "4 chars" "$(desc "$TMP/empty" GIT_TOKEN=abcd)"
+assert_eq "describe: never prints the token itself" \
+  "" "$(desc "$TMP/empty" GIT_TOKEN=sup3rs3cr3t | grep -o sup3rs3cr3t)"
+assert_contains "describe: names the file it read" \
+  ".git-token" "$(desc "$TMP/dotfile")"
+
 t_summary
