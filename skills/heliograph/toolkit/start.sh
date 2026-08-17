@@ -167,10 +167,33 @@ credential() {
 # transport.md records the trap this answers: a token that authenticates against
 # a host's REST API tells you nothing about whether GIT can authenticate.
 # Different credential, different path. So test the path we depend on.
-verify() {
-  local br out
-  br="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+#
+# The write check dry-runs against a ref that DOES NOT EXIST on the remote, and
+# the choice is load-bearing rather than arbitrary.
+#
+# `push --dry-run origin HEAD:refs/heads/<current-branch>` is refused LOCALLY as
+# a non-fast-forward the moment origin holds a commit this checkout lacks, which
+# is the ordinary state every time this script runs: after a reboot, after the
+# SSH session died, or any time a step or a request was pushed since the clone.
+# The credential is fine and the message blamed it, and the `pull --rebase` that
+# would have resolved it is below and never ran. As a container entrypoint that
+# is a container that refuses to start after any push.
+#
+# A ref that does not exist cannot be a non-fast-forward, and --dry-run creates
+# nothing, so nothing is left behind on the remote. The push still negotiates
+# with git-receive-pack, which is the service write access is granted on, so this
+# proves write rather than merely read - which is the whole point of the check.
+#
+# The name is fixed rather than generated: it is greppable in a git host's audit
+# log, it carries the tool's name so nobody mistakes it for someone's work, and a
+# deterministic check is one an operator can reproduce by hand. It sits in
+# refs/heads/ because that is the namespace agent.sh actually pushes to, and some
+# hosts refuse a namespace they do not recognise - testing the path we depend on
+# is the point.
+WRITE_CHECK_REF="refs/heads/heliograph-write-check"
 
+verify() {
+  local out
   if out="$(cap_git ls-remote --heads origin 2>&1)"; then
     report ok "git read" "ls-remote returned $(printf '%s\n' "$out" | grep -c .) ref(s)"
   else
@@ -179,16 +202,15 @@ verify() {
   fi
 
   # Read access is not write access, and the expensive failure is an hour-long
-  # step that captures a perfect log and cannot deliver it. An explicit refspec
-  # is used so git contacts the remote even when there is nothing to send.
-  if [ -z "$br" ] || [ "$br" = "HEAD" ]; then
-    report warn "git write" "not on a branch, so there is no refspec to test a push against"
-    return 0
-  fi
-  if out="$(cap_git push --dry-run origin "HEAD:refs/heads/$br" 2>&1)"; then
+  # step that captures a perfect log and cannot deliver it.
+  if out="$(cap_git push --dry-run origin "HEAD:$WRITE_CHECK_REF" 2>&1)"; then
     report ok "git write" "push --dry-run was accepted"
+  elif printf '%s\n' "$out" | grep -qiE 'fast-forward|fetch first|behind'; then
+    # Classify rather than blaming the credential for every refusal. A
+    # fast-forward refusal is a statement about history, not about authorisation.
+    report warn "git write" "the remote refused a fast-forward, so write access is unproven rather than denied. That is history, not the credential: the sync below pulls, and agent.sh keeps retrying. If it persists, run 'git pull --rebase' by hand"
   else
-    report FAIL "git write" "push --dry-run was refused: $(printf '%s\n' "$out" | tail -1). The agent would capture logs it could not deliver. Check the credential reported above has write access, not just read"
+    report FAIL "git write" "push --dry-run of HEAD:$WRITE_CHECK_REF was refused: $(printf '%s\n' "$out" | tail -1). The agent would capture logs it could not deliver. Check the credential reported above has write access and not just read; a remote that restricts which branch names may be created refuses this check too"
   fi
 }
 

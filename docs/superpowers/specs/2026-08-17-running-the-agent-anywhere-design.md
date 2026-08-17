@@ -95,10 +95,21 @@ agent if that fails, naming the branch of the table it took and what to fix.
 
 Read access is not write access, and the expensive failure is an agent that polls
 happily for an hour, captures a perfect log, and cannot push it. `start.sh` proves
-write access with `git push --dry-run origin HEAD:refs/heads/<branch>`. The
-explicit refspec is what makes this reliable: git contacts the remote to discover
-refs before deciding what to send, so the credential is exercised even when there
-is nothing to push.
+write access with `git push --dry-run origin HEAD:refs/heads/heliograph-write-check`
+- a ref that deliberately **does not exist** on the remote.
+
+Two properties make that reliable. The push negotiates with `git-receive-pack`,
+which is the service write access is granted on, so a read-only credential fails
+it. And a ref that does not exist cannot be refused as a non-fast-forward, so a
+checkout that is merely *behind* origin is not misreported as a credential
+failure - which the current branch's own refspec did, on every reboot and after
+every push by the author, blaming a perfectly good credential and refusing to
+start. `--dry-run` creates nothing, so nothing is left on the remote.
+
+A refusal is therefore classified rather than blamed on the credential: a
+fast-forward complaint is a warning about history and does not block, anything
+else is a blocking failure that names both write access and remote branch-name
+policy as the things to check.
 
 ## The PR ladder
 

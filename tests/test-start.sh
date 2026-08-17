@@ -100,6 +100,50 @@ run_start "$TMP/noremote" --check
 assert_eq "no origin blocks: git is the transport" "1" "$RC"
 assert_contains "and it says which remote is missing" "origin" "$OUT"
 
+# --- a checkout that is merely behind origin is not a credential failure -------
+# This is the modal state every time start.sh runs and the agent is not already
+# going: after a reboot, after the SSH session died, or any time a step or a
+# request was pushed since the clone. `push --dry-run HEAD:refs/heads/<current>`
+# is refused LOCALLY as a non-fast-forward in exactly that state, and reporting
+# that as an auth problem made a container entrypoint that refuses to start after
+# any push, while blaming a credential that was perfect. The write check therefore
+# dry-runs against a ref that cannot conflict.
+make_repo "$TMP/behind"
+br="$( cd "$TMP/behind" && git rev-parse --abbrev-ref HEAD )"
+( cd "$TMP/behind" \
+    && date > pushed-since-the-clone.txt \
+    && $GIT add -A && $GIT commit -qm "the author pushes a step" \
+    && $GIT push -q origin HEAD \
+    && git reset -q --hard HEAD~1 ) >/dev/null 2>&1
+assert_eq "the fixture really is behind origin by one" "1" \
+  "$( cd "$TMP/behind" && git rev-list --count "HEAD..origin/$br" )"
+run_start "$TMP/behind" --check
+assert_eq "a checkout behind origin still passes the preflight" "0" "$RC"
+assert_contains "and the write check is accepted, not blamed on the credential" \
+  "ok    git write" "$OUT"
+
+# --dry-run must leave nothing behind: a preflight that created a branch on the
+# operator's remote every time it ran would be a defect of its own.
+assert_eq "the write check creates no ref on the remote" "" \
+  "$( cd "$TMP/behind" && git ls-remote --heads origin | grep -o heliograph-write-check )"
+
+# --- and write genuinely refused still blocks ---------------------------------
+# Read succeeds, git-receive-pack refuses: what a read-only credential looks like.
+# The check above would be worthless if it had become an unconditional pass.
+make_repo "$TMP/readonly"
+cat > "$TMP/denypack" <<'EOF'
+#!/bin/sh
+echo "remote: You are not allowed to push code to this project." >&2
+exit 1
+EOF
+chmod +x "$TMP/denypack"
+( cd "$TMP/readonly" && git config remote.origin.receivepack "$TMP/denypack" ) >/dev/null 2>&1
+run_start "$TMP/readonly" --check
+assert_eq "a remote that refuses receive-pack blocks" "1" "$RC"
+assert_contains "read having passed is still reported, so the two are told apart" \
+  "ok    git read" "$OUT"
+assert_contains "and the write failure says what to check" "write access" "$OUT"
+
 # --- an unreachable https remote exercises the token branch ------------------
 make_repo "$TMP/https"
 ( cd "$TMP/https" && git remote set-url origin https://example.invalid/x.git ) >/dev/null 2>&1

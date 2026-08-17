@@ -35,9 +35,16 @@ one, and says what to install.
 
 **Can git push from here?** A token that authenticates against the host's REST API
 says nothing about the git path, and read access says nothing about write access.
-It runs `ls-remote`, then `push --dry-run` with an explicit refspec so the remote
-is contacted even when there is nothing to send. The failure it prevents is an
-hour-long step that captures perfect evidence and cannot deliver it.
+It runs `ls-remote`, then `push --dry-run origin HEAD:refs/heads/heliograph-write-check`
+against a ref that deliberately **does not exist** on the remote. The push still
+negotiates with `git-receive-pack`, which is the service write access is granted
+on, so a read-only credential fails it; and because the ref does not exist it
+cannot be refused as a non-fast-forward, so a checkout that is merely *behind*
+origin is not misreported as a credential failure. `--dry-run` creates nothing, so
+the ref is never actually left on the remote. A fast-forward refusal is reported
+as a `warn` about history and does not block; anything else blocks. The failure
+this prevents is an hour-long step that captures perfect evidence and cannot
+deliver it.
 
 It also reports which credential is in force, by mechanism and length, **never by
 value**: `cap_auth_describe` shares one precedence list with `_cap_auth_header`, so
