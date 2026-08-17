@@ -24,11 +24,13 @@ can run one at all*, and owns nothing else: no log, no push, like `secret.sh`.
 
 It answers two questions that were previously answered by a failed round trip.
 
-**Can this machine produce a usable capture?** `sed -u` and `base64 -w0` are
-GNU-only spellings the toolkit depends on, and until now that was prose in a
-README. A busybox `sed` does not fail loudly: the capture still runs and every
-line carries the same timestamp, which reads like a working log while destroying
-the single property these logs exist for. `start.sh` refuses to start the agent on
+**Can this machine produce a usable capture?** The toolkit depends on `sed -u`
+and `base64 -w0`, and until now that was prose in a README rather than
+something checked. Neither spelling is universal: `sed -u` is absent from
+busybox, `base64 -w0` is absent from BSD/macOS base64. A busybox `sed` does
+not fail loudly: the capture still runs and every line carries the same
+timestamp, which reads like a working log while destroying the single
+property these logs exist for. `start.sh` refuses to start the agent on
 one, and says what to install.
 
 **Can git push from here?** A token that authenticates against the host's REST API

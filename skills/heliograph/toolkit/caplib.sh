@@ -14,11 +14,12 @@
 #   cap_footer "$OUT" $?
 #   cap_push   "$OUT" "step: whatever (exit=$?)"
 #
-# Requires bash 4+, git, and GNU coreutils/sed: `sed -u` keeps the capture
-# unbuffered so a line is stamped when it is produced rather than when the block
-# flushes, and `base64 -w0` builds the HTTPS auth header. Both are GNU-only
-# spellings. A control node is a Linux box in practice; on macOS install GNU
-# coreutils and gnu-sed, and put them first on PATH.
+# Requires bash 4+, git, and GNU coreutils/sed in practice: `sed -u` keeps the
+# capture unbuffered so a line is stamped when it is produced rather than when
+# the block flushes, and `base64 -w0` builds the HTTPS auth header. Neither
+# spelling is universal - `sed -u` is absent from busybox, `base64 -w0` is
+# absent from BSD/macOS base64 - so a control node is a Linux box in practice;
+# on macOS install GNU coreutils and gnu-sed, and put them first on PATH.
 #
 # Honoured environment variables:
 #   PUSH=0        cap_push captures only; does not commit or push

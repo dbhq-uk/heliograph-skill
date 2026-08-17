@@ -9,11 +9,12 @@
 #
 #  Three jobs, and nothing else:
 #
-#    1. Prove this machine can produce a usable capture AT ALL. `sed -u` and
-#       `base64 -w0` are GNU-only spellings the toolkit depends on, and a
-#       busybox sed does not fail loudly: it produces a log where every line
-#       carries the same timestamp, which is worse than no timestamp because it
-#       looks like one.
+#    1. Prove this machine can produce a usable capture AT ALL. The toolkit
+#       depends on `sed -u` and `base64 -w0`, and neither spelling is
+#       universal: `sed -u` is absent from busybox, `base64 -w0` is absent
+#       from BSD/macOS base64. A busybox sed does not fail loudly: it produces
+#       a log where every line carries the same timestamp, which is worse than
+#       no timestamp because it looks like one.
 #    2. Prove git can PUSH from here, before an hour-long step discovers that it
 #       cannot. Read access is not write access, and a token that works against
 #       a host's REST API says nothing about the git path.
