@@ -4,9 +4,9 @@
 # =============================================================================
 #     bootstrap.sh <target-dir>
 #
-#  Copies run.sh, agent.sh, caprun.sh, caplib.sh, secret.sh, lib/, steps/,
-#  agent/, ops-logs/, secrets/ and TASK.md into <target-dir>, and installs the
-#  toolkit's gitignore as <target-dir>/.gitignore.
+#  Copies start.sh, run.sh, agent.sh, caprun.sh, caplib.sh, secret.sh, lib/,
+#  steps/, agent/, ops-logs/, secrets/ and TASK.md into <target-dir>, and installs
+#  the toolkit's gitignore as <target-dir>/.gitignore.
 #
 #  THE TARGET SHOULD BE ITS OWN PRIVATE REPO, not this one and not a repo that
 #  holds anything else. Captured logs are committed and pushed - that is how a
