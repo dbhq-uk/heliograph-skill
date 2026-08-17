@@ -78,14 +78,14 @@ put on the repo". For a token, the source and the length only: a token mangled o
 truncated by an ARM template parameter is a real failure mode, and the length
 settles it without printing a secret into a log that gets committed.
 
-The header travels to git through the environment rather than the command line.
-`git -c http.extraHeader=...` puts the credential in `/proc/<pid>/cmdline`, which
-is world readable, so any other user on the control node can take it from `ps`;
-the environment is owner-only. Below git 2.31, or when the version cannot be read,
-there is no environment route and `cap_git` falls back to `-c`. It is less
-exposure rather than none: root, a core dump and a debugger all still see the
-value, which is why the advice remains a short-lived, narrowly scoped credential
-and SSH wherever possible.
+The header travels to git through the environment rather than the command line,
+because `git -c http.extraHeader=...` lands in `/proc/<pid>/cmdline`, which any
+other user on the control node can read; the environment is owner-only. Neither
+route hides the value from root, a core dump or a debugger, which is why the
+advice remains a short-lived, narrowly scoped credential and SSH wherever
+possible. `transport.md` is the authoritative account of both routes, including
+the git-2.31 boundary below which there is no environment route to fall back
+from.
 
 **It measures rather than assumes.** `transport.md` already records the trap: a
 token that works against the host's REST API tells you nothing about whether git

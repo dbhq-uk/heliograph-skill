@@ -205,7 +205,7 @@ store the far side has. Details, and why each guard is there:
 | | |
 |---|---|
 | [references/steps.md](references/steps.md) | writing a step, and the traps that cost round trips |
-| [references/runner.md](references/runner.md) | `run.sh`, `agent.sh`, `caprun.sh`, every `cap_*` and knob |
+| [references/runner.md](references/runner.md) | `start.sh`, `run.sh`, `agent.sh`, `caprun.sh`, every `cap_*` and knob |
 | [references/method.md](references/method.md) | how to debug across a gap. The expensive lessons |
 | [references/transport.md](references/transport.md) | how the control node authenticates to the git host |
 | [references/secrets.md](references/secrets.md) | `secret.sh`, for a value that has to reach the far side |

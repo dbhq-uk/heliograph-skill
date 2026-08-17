@@ -50,10 +50,11 @@ It is deliberately generic. Ansible, Terraform, Terragrunt, a Kubernetes cluster
 that will not form, a Windows Server box over SSH, a hung service, a failing
 cluster join: anything you can express as a command.
 
-**Better still, nobody relays anything.** The operator starts `./agent.sh` once
-and walks away. It watches the branch, runs what you ask for, and pushes the log
-back. After that the loop is git in both directions, and nobody has to be sitting
-on the far side.
+**Better still, nobody relays anything.** The operator starts `./start.sh` once
+and walks away. It proves the machine can capture and push, then hands off to the
+agent, which watches the branch, runs what you ask for, and pushes the log back.
+After that the loop is git in both directions, and nobody has to be sitting on the
+far side.
 
 ## Two properties that make a log-only loop workable
 
@@ -126,7 +127,7 @@ reads the logs. What you decide is which question to ask next.
 2. **Baseline first.** `./run.sh env` answers what that box actually is: OS, tools, sudo, proxy, DNS, cloud auth, and which commit of the repo is checked out
 3. **One branch per investigation.** `TASK.md` holds the question, the measurements and the conclusions, and keeps the last two apart
 4. **One step per question.** Copy the template, write the probes, register it, push
-5. **The operator pulls and runs**, or `agent.sh` does it unattended
+5. **The operator pulls and runs**, or `./start.sh` checks the machine and starts the agent unattended
 6. **The log comes back over git**, timestamped and complete, whether the step passed or failed
 
 ## What ships

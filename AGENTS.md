@@ -119,7 +119,7 @@ claude plugin validate .
 shellcheck skills/heliograph/toolkit/*.sh skills/heliograph/toolkit/lib/*.sh   # if installed
 ```
 
-CI runs the first three plus the frontmatter and install checks. Be honest about
+CI runs the first four plus the frontmatter and install checks. Be honest about
 what none of it covers: **nothing here exercises a capture against a real remote
 machine.** The behaviour that matters is what a log looks like after a round trip
 through someone else's terminal, and no test asserts that.
