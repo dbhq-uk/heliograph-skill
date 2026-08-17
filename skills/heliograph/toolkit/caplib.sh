@@ -237,10 +237,45 @@ cap_auth_describe() {
   printf 'none, so git is used unmodified - correct for an SSH remote'
 }
 
+# git 2.31 (March 2021) honours GIT_CONFIG_COUNT. Older git ignores it SILENTLY,
+# and silently is the whole problem: the request would go out with no credential
+# and fail as a bare auth error, which is exactly the wasted round trip this
+# toolkit exists to prevent. So the version is checked, never hoped for.
+_cap_git_env_config() {
+  local v maj rest min
+  v="$(git --version 2>/dev/null)"
+  v="${v#git version }"
+  maj="${v%%.*}"
+  rest="${v#*.}"
+  min="${rest%%.*}"
+  case "$maj" in ''|*[!0-9]*) return 1 ;; esac
+  case "$min" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$maj" -gt 2 ] && return 0
+  [ "$maj" -eq 2 ] && [ "$min" -ge 31 ]
+}
+
 # cap_git <git-args...> - git, with the auth header attached when one is configured.
+#
+# The header goes through the ENVIRONMENT rather than argv. `git -c k=v` puts the
+# value on this process's command line, and /proc/<pid>/cmdline is mode 444: any
+# other user on the control node can read the token straight out of `ps`.
+# /proc/<pid>/environ is mode 400, so the environment is owner-only. A heliograph
+# control node is often a shared jump host in someone else's estate, and this
+# token is frequently the only credential the tool is trusted with.
+#
+# It is a reduction in exposure, not a guarantee: root still reads either, and a
+# core dump or a debugger sees the value in memory whichever route it took.
 cap_git() {
-  local hdr; hdr="$(_cap_auth_header)"
-  if [ -n "$hdr" ]; then git -c http.extraHeader="$hdr" "$@"; else git "$@"; fi
+  local hdr
+  hdr="$(_cap_auth_header)"
+  if [ -z "$hdr" ]; then
+    git "$@"
+  elif _cap_git_env_config; then
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader GIT_CONFIG_VALUE_0="$hdr" \
+      git "$@"
+  else
+    git -c http.extraHeader="$hdr" "$@"
+  fi
 }
 
 # --- ship the log back via git (the transport) -------------------------------
@@ -274,7 +309,9 @@ cap_push() {
     if [ -d "$(git rev-parse --git-path rebase-merge 2>/dev/null)" ] || \
        [ -d "$(git rev-parse --git-path rebase-apply 2>/dev/null)" ]; then
       echo "rebase left in progress - aborting it; the log is committed locally"
-      cap_git rebase --abort >/dev/null 2>&1
+      # Bare git: abort touches no network, so cap_git would put the auth header
+      # in this process's argv for nothing.
+      git rebase --abort >/dev/null 2>&1
     fi
   fi
   if cap_git push --quiet 2>/dev/null; then

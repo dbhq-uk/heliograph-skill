@@ -258,7 +258,9 @@ while :; do
       say "pulled $(git log --oneline -1)"
     else
       say "pull --rebase failed - working tree may be dirty; leaving it alone"
-      cap_git rebase --abort >/dev/null 2>&1
+      # Bare git: abort touches no network, so cap_git would put the auth header
+      # in this process's argv for nothing.
+      git rebase --abort >/dev/null 2>&1
       sleep "$INTERVAL"; continue
     fi
 

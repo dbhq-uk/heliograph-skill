@@ -40,6 +40,22 @@ wants `x-access-token`, GitLab `oauth2`. `.git-token` is gitignored.
 **Re-pointing the remote at SSH is the right fix**, rather than carrying a header
 forever.
 
+### What the token path costs
+
+The header is passed to git through the environment (`GIT_CONFIG_COUNT`), not on
+the command line. `git -c http.extraHeader=...` would put the credential in
+`/proc/<pid>/cmdline`, which is world readable, so any other user on the control
+node could read it out of `ps`. The environment is owner-only.
+
+Below git 2.31 there is no environment route, so `cap_git` falls back to `-c` and
+the exposure returns. `./start.sh --check` reports the git version, which is what
+tells you which of the two you are getting.
+
+Neither route hides the value from root, from a core dump, or from a debugger.
+This is transport for a credential that should be short lived and narrowly
+scoped, and re-pointing the remote at SSH remains the right fix rather than
+carrying a header at all.
+
 ## The trap worth knowing
 
 A token that works against the host's REST API tells you nothing about whether
