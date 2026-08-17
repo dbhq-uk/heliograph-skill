@@ -215,8 +215,11 @@ credential() {
       # operator's next move differs between the last two, so all three are told
       # apart rather than collapsed into "no key".
       fps="$(ssh-add -l 2>/dev/null)"; rc=$?
+      # The ${x% } trims the separator tr leaves on the end: this line gets pasted
+      # back into tickets, and trailing whitespace there is noise nobody can see.
+      fps="$(printf '%s\n' "$fps" | awk '{print $2}' | tr '\n' ' ')"
       case "$rc" in
-        0) report ok "ssh key" "agent offers: $(printf '%s\n' "$fps" | awk '{print $2}' | tr '\n' ' ')" ;;
+        0) report ok "ssh key" "agent offers: ${fps% }" ;;
         1) report warn "ssh key" "an ssh agent is reachable but holds no keys, so nothing can authenticate through it. Run 'ssh-add <path-to-key>'. A key in ~/.ssh may still work: the read and write checks below settle it" ;;
         2) report warn "ssh key" "no ssh agent is reachable (SSH_AUTH_SOCK is ${SSH_AUTH_SOCK:-unset}). Forward one with 'ssh -A', or start one here with 'eval \$(ssh-agent)' then 'ssh-add'. A key in ~/.ssh may still work: the read and write checks below settle it" ;;
         *) report warn "ssh key" "ssh-add exited $rc, so which key is offered is unknown - it may not be installed. Install openssh-client to see the fingerprint; the read and write checks below are what settle it" ;;
