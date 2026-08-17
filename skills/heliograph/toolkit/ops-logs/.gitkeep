@@ -1,4 +1,6 @@
-# Captured runs land here - see RUNNER.md.
+# Captured runs land here, one file per run, named <step>-<UTC timestamp>.txt.
+# `./run.sh <step>` writes one and pushes it; `PUSH=0 ./run.sh <step>` writes one
+# and leaves it here. `./run.sh --list` names the steps on this branch.
 #
 # These files are TRACKED on purpose: committing a log is how a run escapes a
 # machine nobody can interactively reach. Clear them with `git rm ops-logs/*.txt`

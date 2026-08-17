@@ -460,8 +460,17 @@ cap_push() {
     # a new branch would capture the log and then fail to ship it.
     echo "Pushed: $(basename "$out")  (new branch - upstream set)"
   else
+    # SELF-CONTAINED on purpose. This pointed at "'Pushing' in RUNNER.md", and no
+    # such file ships: the operator has a transport repo of scripts and no
+    # documentation at all. Sending someone to a document they do not have, at the
+    # moment their push has just failed and the log is stuck on a machine nobody
+    # can reach, is the worst possible time to do it. Name the next command and
+    # the variables instead - everything below is in this repo or in their shell.
     echo "PUSH FAILED - run 'git push' manually. The file is committed locally:"
     echo "  $out"
-    echo "  (if this is an auth failure, see 'Pushing' in RUNNER.md)"
+    echo "  If that push fails on authentication: an ssh remote needs a key that"
+    echo "  'ssh-add -l' can list; an https remote needs GIT_TOKEN, or"
+    echo "  GIT_TOKEN_FILE naming a file whose first line is the token."
+    echo "  './start.sh --check' reports which credential is in force here."
   fi
 }

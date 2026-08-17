@@ -211,4 +211,25 @@ else
   printf 'skip real-git env route: %s is below 2.31\n' "$(git --version)"
 fi
 
+# --- cap_push's failure text has to work for someone with only this repo -------
+# It ended on "see 'Pushing' in RUNNER.md". No such file ships: the transport repo
+# is scripts and no documentation at all, and references/runner.md lives in the
+# skill repo the operator does not have. That text is printed at the one moment it
+# matters most - the push has just failed and the log is stranded on a machine
+# nobody can reach - so it has to name the next command, not a document.
+mkdir -p "$TMP/pushfail" && ( cd "$TMP/pushfail" && git init -q \
+    && git remote add origin https://example.invalid/x.git ) >/dev/null 2>&1
+printf 'a captured log\n' > "$TMP/pushfail/out.txt"
+pushfail_out="$( cd "$TMP/pushfail" \
+                 && env GIT_AUTHOR_NAME=ci GIT_AUTHOR_EMAIL=ci@example.com \
+                    bash -c ". \"$TOOLKIT/caplib.sh\"; cap_push out.txt msg" 2>&1 )"
+assert_contains "a failed push still says where the log is" \
+  "committed locally" "$pushfail_out"
+assert_eq "and it points at no document the operator does not have" "" \
+  "$(printf '%s' "$pushfail_out" | grep -o 'RUNNER.md')"
+assert_contains "it names the ssh check instead" "ssh-add -l" "$pushfail_out"
+assert_contains "and the https variables" "GIT_TOKEN" "$pushfail_out"
+assert_contains "and the command that reports which is in force" \
+  "./start.sh --check" "$pushfail_out"
+
 t_summary
