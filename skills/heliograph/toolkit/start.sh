@@ -147,7 +147,14 @@ credential() {
     https://*|http://*) scheme=https ;;
     *)                  scheme=other ;;
   esac
-  report ok remote "$url  ($scheme)"
+  # People really do arrive with the token-in-URL form (transport.md says so), and
+  # git redacts userinfo in its own messages while this did not: the whole
+  # https://ci-user:glpat-...@host/... went to stdout, which in PR 3 and PR 4 is
+  # container stdout. cap_redact does not catch this shape either, so mask it
+  # here. Only a `user:password@` between `://` and the first `/` is touched, so
+  # git@host:path, ssh://git@host:2222/... and a local filesystem path all pass
+  # through unaltered.
+  report ok remote "$(printf '%s' "$url" | sed -E 's#(://[^/@:]*):[^/@]*@#\1:***@#')  ($scheme)"
 
   case "$scheme" in
     ssh)

@@ -154,6 +154,32 @@ assert_contains "the token mechanism is named" "GIT_TOKEN" "$OUT"
 assert_contains "the token length is reported" "4 chars" "$OUT"
 assert_eq "the token value is never printed" "" "$(printf '%s' "$OUT" | grep -o abcd)"
 
+# --- a token embedded in the remote URL is a credential too --------------------
+# transport.md records that people arrive with this form, git redacts userinfo in
+# its own messages, and cap_redact does not catch this shape. The remote line
+# printed it verbatim, which in PRs 3 and 4 is container stdout.
+make_repo "$TMP/urltoken"
+( cd "$TMP/urltoken" \
+    && git remote set-url origin https://ci-user:glpat-SUPERSECRET@git.invalid/p/t.git \
+  ) >/dev/null 2>&1
+RC=0
+OUT="$( cd "$TMP/urltoken" && ./start.sh --check 2>&1 )" || RC=$?
+assert_eq "a token in the remote URL is never printed" "" \
+  "$(printf '%s' "$OUT" | grep -o glpat-SUPERSECRET)"
+assert_contains "the rest of the URL still is, or the line diagnoses nothing" \
+  "https://ci-user:***@git.invalid/p/t.git" "$OUT"
+
+# ssh and local remotes must come through untouched: masking a colon in
+# git@host:path would make the line useless for the transport we recommend.
+make_repo "$TMP/urlssh"
+( cd "$TMP/urlssh" && git remote set-url origin git@git.invalid:p/t.git ) >/dev/null 2>&1
+RC=0
+OUT="$( cd "$TMP/urlssh" && ./start.sh --check 2>&1 )" || RC=$?
+assert_contains "an scp-form ssh remote is printed unaltered" \
+  "git@git.invalid:p/t.git" "$OUT"
+assert_contains "and a local path remote is too" \
+  "$TMP/good.origin.git" "$( cd "$TMP/good" && ./start.sh --check 2>&1 )"
+
 # --- the handover ------------------------------------------------------------
 # start.sh must exec agent.sh rather than run it as a child, so that the
 # operator's Ctrl-C reaches the agent and its cleanup trap fires. A stub agent

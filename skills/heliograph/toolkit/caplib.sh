@@ -68,10 +68,22 @@ cap_result() {
 #
 # Note `secret_name=pw-foo` is intentionally NOT masked (the name of a Key Vault
 # secret is useful and harmless); `admin_password=...` is.
+#
+# `scheme://user:password@host` is masked because steps print git and registry
+# URLs constantly and the token-in-URL clone is a form people really do arrive
+# with. git redacts userinfo in its own messages; a command that echoes its own
+# argv does not, and none of the other patterns here catch this shape - it is
+# neither key=value nor a Bearer/Basic header. Only what sits between `://` and
+# the first `/` is touched, so `git@host:path` and a local path are left alone.
+# A password containing `/` (a base64 registry password) is deliberately NOT
+# caught: allowing `/` in the class lets the pattern run past a path segment and
+# mask an `@` that belongs to a path, and losing evidence is the more expensive
+# mistake here. Best effort, as the paragraph above says.
 cap_redact() {
   if [ "${REDACT:-1}" = "0" ]; then cat; return 0; fi
   sed -u -E \
     -e "s/((password|passwd|pwd|secret|token|api[_-]?key|client_secret|sas|connectionstring)[\"\x27]?[[:space:]]*[:=][[:space:]]*[\"\x27]?)[^\"\x27[:space:],;}]+/\1***REDACTED***/gI" \
+    -e "s#(://[^/@:[:space:]]*):[^/@[:space:]]*@#\1:***REDACTED***@#g" \
     -e "s/(Bearer[[:space:]]+)[A-Za-z0-9._~+\/-]{16,}=*/\1***REDACTED***/g" \
     -e "s/(Basic[[:space:]]+)[A-Za-z0-9+\/]{16,}=*/\1***REDACTED***/g" \
     -e "s/-----BEGIN [A-Z ]*PRIVATE KEY-----/***REDACTED PRIVATE KEY***/g"
