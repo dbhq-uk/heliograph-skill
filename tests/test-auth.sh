@@ -162,4 +162,25 @@ assert_contains "describe: empty token file says no header is sent, not a fake l
 assert_eq "describe: empty token file never claims a (0 chars) token is in force" \
   "" "$(desc "$TMP/emptyfile" | grep -o '(0 chars)')"
 
+# --- fix: a GIT_TOKEN_FILE pointing at a DIRECTORY must print no sed noise ------
+# GIT_TOKEN_FILE=/run/secrets - the mounted secrets DIRECTORY rather than a file
+# inside it - is the realistic mistake once this runs in a container. sed was
+# unsilenced, so "sed: read error on /run/secrets: Is a directory" landed in the
+# middle of the preflight table, which then explained it as an empty first line.
+mkdir -p "$TMP/secretsdir"
+both() {  # both <workdir> [VAR=VAL ...] - cap_auth_describe, stdout AND stderr
+  local wd="$1"; shift
+  ( cd "$wd" && env -i HOME="$wd" PATH="$PATH" "$@" \
+      bash -c ". \"$TOOLKIT/caplib.sh\"; cap_auth_describe" 2>&1 )
+}
+assert_eq "a directory as GIT_TOKEN_FILE prints no sed noise" "" \
+  "$(both "$TMP/empty" GIT_TOKEN_FILE="$TMP/secretsdir" | grep -o 'read error')"
+assert_contains "and the wording covers unreadable as well as empty" \
+  "is unreadable or its first line is empty, so no header is sent" \
+  "$(both "$TMP/empty" GIT_TOKEN_FILE="$TMP/secretsdir")"
+assert_eq "_cap_auth_header sends no header for it, and prints no noise either" "" \
+  "$( cd "$TMP/empty" && env -i HOME="$TMP/empty" PATH="$PATH" \
+        GIT_TOKEN_FILE="$TMP/secretsdir" \
+        bash -c ". \"$TOOLKIT/caplib.sh\"; _cap_auth_header" 2>&1 )"
+
 t_summary

@@ -163,4 +163,26 @@ out="$(run_cap_git "$TMP/vapple" GIT_TOKEN="$TOKEN")"
 assert_eq "2.39.5 (Apple Git-154): the environment route is used" \
   "1" "$(printf '%s\n' "$out" | sed -n 's/^COUNT: //p')"
 
+# --- one case against the REAL git on PATH ------------------------------------
+# Everything above runs against a fake git, so it pins what cap_git SETS and
+# nothing at all about whether a real git honours it. A fake that agreed with a
+# wrong assumption would pass every assertion in this file. `git config --get`
+# resolves the same configuration a network operation would and prints it, so it
+# is the cheapest observation of the real thing, and it touches no network.
+#
+# Skipped rather than failed below git 2.31, where there is deliberately no
+# environment route: the fallback is `-c`, which the fake-git cases above cover.
+if ( env -i HOME="$TMP" PATH="$PATH" \
+       bash -c ". \"$TOOLKIT/caplib.sh\"; _cap_git_env_config" ); then
+  real="$( cd "$TMP" && env -i HOME="$TMP" PATH="$PATH" GIT_TOKEN=tok \
+             bash -c ". \"$TOOLKIT/caplib.sh\"; cap_git config --get http.extraHeader" )"
+  assert_eq "the real git on PATH honours the environment route" \
+    "Authorization: Basic $(printf ':%s' tok | base64 -w0)" "$real"
+  assert_eq "and with no credential it sets nothing for git to find" "" \
+    "$( cd "$TMP" && env -i HOME="$TMP" PATH="$PATH" \
+          bash -c ". \"$TOOLKIT/caplib.sh\"; cap_git config --get http.extraHeader" )"
+else
+  printf 'skip real-git env route: %s is below 2.31\n' "$(git --version)"
+fi
+
 t_summary

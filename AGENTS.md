@@ -113,16 +113,23 @@ bootstrapping into a repo that holds anything else.
 
 ```bash
 bash -n install.sh install-codex.sh
-find skills -name '*.sh' -exec bash -n {} +
-claude plugin validate .
+find skills tests -name '*.sh' -exec bash -n {} +
+shellcheck -S warning $(find . -name '*.sh' -not -path './.git/*')
+jq empty .claude-plugin/plugin.json
 ./tests/run-tests.sh
-shellcheck skills/heliograph/toolkit/*.sh skills/heliograph/toolkit/lib/*.sh   # if installed
 ```
 
-CI runs the first four plus the frontmatter and install checks. Be honest about
-what none of it covers: **nothing here exercises a capture against a real remote
-machine.** The behaviour that matters is what a log looks like after a round trip
-through someone else's terminal, and no test asserts that.
+CI runs all five, `shellcheck` included and over that same corpus, plus the
+`SKILL.md` frontmatter check, the em dash, hardcoded-install-path and
+probe-truncation greps, both installers, and an end-to-end capture through a
+bootstrapped copy. Two differences worth knowing: CI's `bash -n` sweep covers the
+root installers and `skills/` but not `tests/`, which it runs outright instead;
+and CI checks the manifest with `jq empty` rather than `claude plugin validate .`,
+which needs the Claude Code CLI, so run that separately if you have it.
+
+Be honest about what none of it covers: **nothing here exercises a capture against
+a real remote machine.** The behaviour that matters is what a log looks like after
+a round trip through someone else's terminal, and no test asserts that.
 
 After changing anything under `toolkit/`, verify by hand from a bootstrapped
 copy:

@@ -212,7 +212,12 @@ _cap_auth_header() {
   case "$src" in
     header:*) printf 'Authorization: %s' "$GIT_AUTH_HEADER"; return 0 ;;
     env:*)    tok="$GIT_TOKEN" ;;
-    file:*)   tok="$(sed -n '1p' "${src#file:}")" ;;
+    # 2>/dev/null because GIT_TOKEN_FILE=/run/secrets - a mounted secrets
+    # DIRECTORY rather than a file inside it - is the realistic mistake, and sed
+    # then writes "read error on /run/secrets: Is a directory" straight into
+    # whatever the caller was printing. An unreadable file yields no token, which
+    # is already handled below.
+    file:*)   tok="$(sed -n '1p' "${src#file:}" 2>/dev/null)" ;;
     # Also reached when a variable this needs (e.g. $HOME, under `set -u`) is
     # unset: the inner _cap_token_source subshell aborts, src comes back empty,
     # and we land here. Status is deliberately 0 either way - stdout being empty
@@ -236,14 +241,22 @@ cap_auth_describe() {
   case "$src" in
     header:*) printf 'GIT_AUTH_HEADER, used verbatim (%s chars)' "${#GIT_AUTH_HEADER}"; return 0 ;;
     env:*)    tok="$GIT_TOKEN"; printf 'GIT_TOKEN from the environment (%s chars)' "${#tok}"; return 0 ;;
-    file:*)   tok="$(sed -n '1p' "${src#file:}")"
-              # _cap_auth_header sends no header at all when the file's first
-              # line is empty (a directory, or `echo $UNSET_VAR >.git-token`).
-              # Reporting "(0 chars)" here would tell an operator the token IS
-              # in force when git is actually running with none - exactly the
-              # disagreement this function exists to prevent.
+              # 2>/dev/null for the same reason as in _cap_auth_header: a
+              # GIT_TOKEN_FILE pointing at a mounted secrets DIRECTORY made sed
+              # print "read error on /run/secrets: Is a directory" into the middle
+              # of the preflight table, and then the table explained it as an
+              # empty first line.
+    file:*)   tok="$(sed -n '1p' "${src#file:}" 2>/dev/null)"
+              # _cap_auth_header sends no header at all when nothing readable
+              # comes back (a directory, an unreadable file, or
+              # `echo $UNSET_VAR >.git-token`). Reporting "(0 chars)" here would
+              # tell an operator the token IS in force when git is actually
+              # running with none - exactly the disagreement this function exists
+              # to prevent. The wording covers all three, because from here they
+              # are indistinguishable and the operator's check is the same: look
+              # at the path.
               if [ -z "$tok" ]; then
-                printf '%s, but its first line is empty, so no header is sent' "${src#file:}"
+                printf '%s is unreadable or its first line is empty, so no header is sent' "${src#file:}"
               else
                 printf '%s (%s chars)' "${src#file:}" "${#tok}"
               fi
