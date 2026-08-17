@@ -110,4 +110,60 @@ assert_contains "the token mechanism is named" "GIT_TOKEN" "$OUT"
 assert_contains "the token length is reported" "4 chars" "$OUT"
 assert_eq "the token value is never printed" "" "$(printf '%s' "$OUT" | grep -o abcd)"
 
+# --- the handover ------------------------------------------------------------
+# start.sh must exec agent.sh rather than run it as a child, so that the
+# operator's Ctrl-C reaches the agent and its cleanup trap fires. A stub agent
+# that reports its own pid is how that gets proved.
+make_repo "$TMP/handover"
+cat > "$TMP/handover/agent.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "STUB AGENT pid=$$ args=$*"
+EOF
+chmod +x "$TMP/handover/agent.sh"
+
+RC=0
+OUT="$( cd "$TMP/handover" && ./start.sh 2>&1 )" || RC=$?
+assert_eq "without --check it runs the agent" "0" "$RC"
+assert_contains "and the agent actually ran" "STUB AGENT" "$OUT"
+
+RC=0
+OUT="$( cd "$TMP/handover" && ./start.sh -- --once --interval 15 2>&1 )" || RC=$?
+assert_contains "args after -- reach agent.sh" "args=--once --interval 15" "$OUT"
+
+# exec, not a subshell: the agent must end up with start.sh's own pid.
+RC=0
+OUT="$( cd "$TMP/handover" && bash -c 'echo "SHELL pid=$$"; exec ./start.sh' 2>&1 )" || RC=$?
+shell_pid="$(printf '%s\n' "$OUT" | sed -n 's/^SHELL pid=//p')"
+agent_pid="$(printf '%s\n' "$OUT" | sed -n 's/.*STUB AGENT pid=\([0-9]*\).*/\1/p')"
+assert_eq "agent.sh is exec'd, so Ctrl-C reaches it" "$shell_pid" "$agent_pid"
+
+# --check must still not reach the agent.
+RC=0
+OUT="$( cd "$TMP/handover" && ./start.sh --check 2>&1 )" || RC=$?
+assert_eq "--check does not run the agent" "" "$(printf '%s' "$OUT" | grep -o 'STUB AGENT')"
+
+# --- --branch ----------------------------------------------------------------
+make_repo "$TMP/branchy"
+cp "$TMP/handover/agent.sh" "$TMP/branchy/agent.sh"
+( cd "$TMP/branchy" && $GIT checkout -q -b task/probe && $GIT push -q -u origin task/probe \
+    && git checkout -q - ) >/dev/null 2>&1
+RC=0
+OUT="$( cd "$TMP/branchy" && ./start.sh --branch task/probe 2>&1 )" || RC=$?
+assert_eq "--branch checks the branch out" "task/probe" \
+  "$( cd "$TMP/branchy" && git rev-parse --abbrev-ref HEAD )"
+assert_contains "and says it did" "task/probe" "$OUT"
+
+RC=0
+OUT="$( cd "$TMP/branchy" && ./start.sh --branch task/nope 2>&1 )" || RC=$?
+assert_eq "a branch that does not exist blocks" "1" "$RC"
+assert_contains "and names it" "task/nope" "$OUT"
+
+# --- --branch validation -------------------------------------------------------
+# Harmless while WANT_BRANCH was inert; once the sync acts on it, a missing or
+# empty value must not silently become a no-op checkout.
+RC=0
+OUT="$( cd "$TMP/good" && ./start.sh --branch 2>&1 )" || RC=$?
+assert_eq "--branch with no value is a usage error" "2" "$RC"
+assert_contains "and it names the problem" "--branch" "$OUT"
+
 t_summary

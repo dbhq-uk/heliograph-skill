@@ -39,17 +39,18 @@ CHECK_ONLY=0
 WANT_BRANCH=""
 AGENT_ARGS=()
 
-# WANT_BRANCH and AGENT_ARGS are parsed here but not consumed until Task 4
-# adds the branch sync and the exec ./agent.sh handover that reads them.
 while [ $# -gt 0 ]; do
   case "$1" in
     --check)   CHECK_ONLY=1 ;;
     --branch)
-      # shellcheck disable=SC2034
-      WANT_BRANCH="${2:-}"; shift ;;
+      WANT_BRANCH="${2:-}"
+      if [ -z "$WANT_BRANCH" ]; then
+        echo "--branch requires a branch name" >&2
+        exit 2
+      fi
+      shift ;;
     --)
       shift
-      # shellcheck disable=SC2034
       AGENT_ARGS=("$@")
       break ;;
     -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -207,4 +208,35 @@ if [ "$CHECK_ONLY" = "1" ]; then
   exit 0
 fi
 
-echo "preflight: clear."
+# --- get on the right branch, up to date -------------------------------------
+# Deliberately after the checks and after --check has already exited: this is
+# the first thing here that touches the working tree.
+#
+# It never resolves a conflict, never forces and never discards the operator's
+# work, for the same reason agent.sh does not: their local state may be the
+# evidence, and destroying it to make a poll succeed is never the right trade.
+if [ -n "$WANT_BRANCH" ]; then
+  cap_git fetch --quiet origin >/dev/null 2>&1
+  if git checkout --quiet "$WANT_BRANCH" 2>/dev/null; then
+    report ok checkout "$WANT_BRANCH"
+  else
+    report FAIL checkout "cannot check out '$WANT_BRANCH'. It may not exist here yet, or the working tree may be dirty"
+    echo
+    echo "preflight: 1 blocking problem above. Not starting the agent."
+    exit 1
+  fi
+fi
+
+if cap_git pull --rebase --quiet >/dev/null 2>&1; then
+  report ok pull "up to date with origin"
+else
+  cap_git rebase --abort >/dev/null 2>&1
+  report warn pull "pull --rebase did not succeed, so the tree is being left alone. agent.sh will keep retrying"
+fi
+
+echo
+echo "preflight: clear. Handing over to agent.sh."
+echo
+# exec, not a child: the operator's Ctrl-C has to reach the agent so its
+# cleanup trap runs and a mid-run step gets signalled rather than orphaned.
+exec ./agent.sh ${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}
