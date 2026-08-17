@@ -60,8 +60,14 @@ the scheme before it looks for anything:
 
 | remote | resolves | in order |
 |---|---|---|
-| `git@host:...` or `ssh://` | an SSH key | `ssh-add -l` agent key, then a mounted key, then `~/.ssh/id_*` |
+| `git@host:...` or `ssh://` | an SSH key | nothing resolves anything. git and ssh already own that, so `start.sh` reports what `ssh-add -l` offers (by exit status: keys, agent-but-empty, or no agent) and then lets the read and write checks settle it |
 | `https://` | a token | `GIT_AUTH_HEADER`, `GIT_TOKEN`, `GIT_TOKEN_FILE`, `./.git-token`, `~/.git-token` |
+
+The SSH row deliberately describes **no chain**. An earlier draft of this table
+had one - agent key, then a mounted key, then `~/.ssh/id_*` - and nothing
+implements it because nothing should: ssh's own config resolution is richer than
+anything reimplemented here, and a second resolver that disagreed with it would
+report a key git never used. Report, then measure. Do not build the chain.
 
 The HTTPS chain is `_cap_auth_header`'s existing precedence, unchanged.
 `start.sh` resolves it, reports it and verifies it; `cap_git` remains the only
@@ -129,6 +135,7 @@ policy as the things to check.
 ```bash
 ./start.sh                          # preflight, verify auth, exec agent.sh
 ./start.sh --check                  # preflight and auth only, exit without running
+./start.sh --branch task/foo        # check that branch out first, then sync
 ./start.sh -- --once --interval 15  # everything after -- goes to agent.sh
 ```
 
@@ -140,7 +147,7 @@ its place by being a failure that is currently silent or misleading.
 | bash 4+ | the toolkit's baseline, stated in AGENTS.md |
 | `git`, and its version | git is the transport; without it nothing works |
 | `sed -u` is honoured | **the load-bearing one.** `sed -u` is what keeps the capture unbuffered so each line is stamped when produced. busybox `sed` has no `-u`. Today this is prose in a README, and breaking it produces a log where every line carries the same time, which is worse than no timestamp because it looks like one |
-| `base64 -w0` is honoured | GNU-only, and `caplib.sh` uses it to build the HTTPS auth header. A BSD `base64` wraps its output and the header is silently malformed |
+| `base64 -w0` is honoured | `caplib.sh` uses it to build the HTTPS auth header, and a `base64` that wraps makes the header silently malformed. **Not GNU-only:** a real BusyBox 1.36.1 accepts `-w0` and its output is byte-identical to GNU's, so busybox fails the `sed -u` row and passes this one. BSD/macOS `base64` is the case this row catches |
 | `sha256sum` present | `agent.sh` uses it for the self-update check and swallows failure with `2>/dev/null`, so on a machine without it self-update silently never happens and a pushed fix to `agent.sh` never takes effect. Surfacing this is a finding in its own right |
 | `date -u`, `wc`, `ls -t`, `hostname` | GNU spellings the capture and the status pushes assume |
 | `setsid` | optional. `agent.sh` falls back to `set -m`; report which path cancel will take |
