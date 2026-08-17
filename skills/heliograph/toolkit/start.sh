@@ -328,6 +328,25 @@ credential() {
 # refs/heads/ because that is the namespace agent.sh actually pushes to, and some
 # hosts refuse a namespace they do not recognise - testing the path we depend on
 # is the point.
+#
+# TWO THINGS THIS CHECK DELIBERATELY DOES NOT CATCH. Both are recorded here so
+# the next reader does not take either for an oversight and "fix" it.
+#
+# 1. A local filesystem remote whose directory is not writable. --dry-run never
+#    writes, so it cannot possibly know. Closed as a non-goal rather than fixed:
+#    a local path remote appears only in this repo's test fixtures, and the real
+#    transport is always a git host. The only way to catch it is to make the
+#    check actually write, which would put a real object into a real remote on
+#    every single preflight - a worse trade than the case it would cover. Do not
+#    "fix" it that way.
+#
+# 2. A pre-receive hook, or a host ruleset on which branch names may be created.
+#    Measured, not assumed: --dry-run negotiates with git-receive-pack and stops
+#    there. It sends no pack, so pre-receive and update hooks never run, and a
+#    push those would decline is reported here as accepted. The check therefore
+#    proves the CREDENTIAL may write, not that this particular ref would survive
+#    a hook. For a preflight that is the right side to be wrong on, and it is why
+#    the FAIL text below names only things the check can actually see.
 WRITE_CHECK_REF="refs/heads/heliograph-write-check"
 
 verify() {
@@ -348,7 +367,14 @@ verify() {
     # fast-forward refusal is a statement about history, not about authorisation.
     report warn "git write" "the remote refused a fast-forward, so write access is unproven rather than denied. That is history, not the credential: the sync below pulls, and agent.sh keeps retrying. If it persists, run 'git pull --rebase' by hand"
   else
-    report FAIL "git write" "push --dry-run of HEAD:$WRITE_CHECK_REF was refused: $(git_detail "$out"). The agent would capture logs it could not deliver. Check the credential reported above has write access and not just read; a remote that restricts which branch names may be created refuses this check too"
+    # Every clause here has to name something this check can actually detect. It
+    # used to end on "a remote that restricts which branch names may be created
+    # refuses this check too", which --dry-run never reaches (see the note above
+    # WRITE_CHECK_REF), so on a hook- or ruleset-based host it pointed the
+    # operator at a red herring in the one message they read when they cannot
+    # push. The read check above passed with the same credential, so the URL, the
+    # host and the network are already ruled out and the message says so.
+    report FAIL "git write" "push --dry-run of HEAD:$WRITE_CHECK_REF was refused: $(git_detail "$out"). The agent would capture logs it could not deliver. The read check above passed with this same credential, so the remote URL and the network are not the problem: it is git-receive-pack refusing the write. Check the credential reported above has write access and not just read - a read-only deploy key and a token missing the write scope both look exactly like this - and, on a host that requires it separately, that the token has been authorised for the organisation"
   fi
 }
 

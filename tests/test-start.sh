@@ -143,10 +143,38 @@ assert_eq "a remote that refuses receive-pack blocks" "1" "$RC"
 assert_contains "read having passed is still reported, so the two are told apart" \
   "ok    git read" "$OUT"
 assert_contains "and the write failure says what to check" "write access" "$OUT"
+# Every clause in that FAIL has to name something this check can actually detect.
+# It used to end "a remote that restricts which branch names may be created
+# refuses this check too" - which --dry-run never reaches, because it sends no
+# pack and pre-receive never runs. On a hook- or ruleset-based host that pointed
+# the operator at a red herring in the one message they read when they cannot
+# push. The block below measures the reachability rather than asserting it.
+assert_eq "and it names no cause a dry-run cannot reach" "" \
+  "$(printf '%s' "$OUT" | grep -o 'which branch names may be created')"
+assert_contains "and it rules out what the read check already proved" \
+  "the remote URL and the network are not the problem" "$OUT"
 # `tail -1` handed over git's wrapped continuation instead. The remote's own words
 # are the diagnostic, and this is the FAIL most likely to fire on a new machine.
 assert_contains "and the remote's own refusal survives into the line" \
   "not allowed to push code" "$OUT"
+
+# --- the documented limitation, pinned so it stays a KNOWN one ----------------
+# start.sh records that --dry-run never reaches a pre-receive hook, so a host
+# whose ruleset would decline this ref still reports `ok git write`. That is a
+# deliberate non-goal, not an oversight. Asserting it means that if some future
+# git changes the behaviour, this fails and the comment gets corrected rather
+# than quietly becoming false.
+make_repo "$TMP/prereceive"
+cat > "$TMP/prereceive.origin.git/hooks/pre-receive" <<'EOF'
+#!/bin/sh
+echo "remote: only refs/heads/release/* may be created here" >&2
+exit 1
+EOF
+chmod +x "$TMP/prereceive.origin.git/hooks/pre-receive"
+run_start "$TMP/prereceive" --check
+assert_eq "a pre-receive hook does not fail the preflight, as documented" "0" "$RC"
+assert_contains "the write check accepts, because --dry-run sends no pack" \
+  "ok    git write" "$OUT"
 
 # --- GitHub writes its cause in UPPERCASE, without a remote: prefix -----------
 # The single highest-value case for the whole write check: a read-only deploy key
