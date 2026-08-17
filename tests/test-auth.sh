@@ -119,7 +119,7 @@ assert_eq "source: GIT_TOKEN_FILE beats ./.git-token" \
 # `ok` claiming the credential was right directly above a FAIL telling the reader
 # to check the credential. start.sh knows the scheme and adds the advice.
 assert_contains "describe: no credential names what was looked for, without opining on the scheme" \
-  "none: no GIT_AUTH_HEADER, GIT_TOKEN, GIT_TOKEN_FILE or .git-token" \
+  "none: no readable GIT_AUTH_HEADER, GIT_TOKEN, GIT_TOKEN_FILE or .git-token" \
   "$(desc "$TMP/empty")"
 assert_eq "describe: and does not claim a scheme it cannot see" "" \
   "$(desc "$TMP/empty" | grep -o 'SSH remote')"
@@ -178,6 +178,30 @@ assert_eq "a directory as GIT_TOKEN_FILE prints no sed noise" "" \
 assert_contains "and the wording covers unreadable as well as empty" \
   "is unreadable or its first line is empty, so no header is sent" \
   "$(both "$TMP/empty" GIT_TOKEN_FILE="$TMP/secretsdir")"
+# --- fix: the enumeration must not deny a variable the operator did set ---------
+# _cap_token_source gates the file candidates on [ -r ], so a GIT_TOKEN_FILE that
+# exists but cannot be READ - a root-owned mounted secret seen by a non-root
+# container process, the realistic case in PRs 3 and 4 - is skipped and falls
+# through to the "none" branch. "no GIT_TOKEN_FILE" there flatly denies a variable
+# that is set, and sends the operator looking for something they already provided.
+# One word closes it without duplicating the precedence list.
+#
+# Skipped under root, where mode 000 is still readable and the state cannot be
+# built. That is not hypothetical: PR 3's container runs as root, so someone will
+# run this suite there.
+printf 'a-real-token\n' > "$TMP/unreadable"
+chmod 000 "$TMP/unreadable"
+if [ "$(id -u)" != "0" ]; then
+  assert_contains "an unreadable GIT_TOKEN_FILE does not get flatly denied" \
+    "no readable GIT_AUTH_HEADER, GIT_TOKEN, GIT_TOKEN_FILE or .git-token" \
+    "$(desc "$TMP/empty" GIT_TOKEN_FILE="$TMP/unreadable")"
+  assert_eq "and its contents are still never printed" "" \
+    "$(both "$TMP/empty" GIT_TOKEN_FILE="$TMP/unreadable" | grep -o a-real-token)"
+else
+  printf 'skip unreadable GIT_TOKEN_FILE: running as root, where mode 000 is still readable\n'
+fi
+chmod 644 "$TMP/unreadable"
+
 assert_eq "_cap_auth_header sends no header for it, and prints no noise either" "" \
   "$( cd "$TMP/empty" && env -i HOME="$TMP/empty" PATH="$PATH" \
         GIT_TOKEN_FILE="$TMP/secretsdir" \

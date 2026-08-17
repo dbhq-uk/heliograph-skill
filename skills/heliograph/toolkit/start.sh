@@ -89,13 +89,26 @@ report() {
 #
 # CRs are stripped because ssh writes its diagnostics with a trailing CR, which
 # inside a printf'd table redraws the line over itself.
+#
+# The match is CASE-INSENSITIVE, and that is not tidiness. GitHub writes its cause
+# in uppercase and without a `remote: ` prefix:
+#
+#   ERROR: The key you are authenticating with has been marked as read only.
+#   fatal: Could not read from remote repository.
+#
+# A case-sensitive pattern misses the first line, matches the trailer, and hands
+# the operator the trailer - which is the whole defect this function exists to fix,
+# in the single highest-value case for the write check. A read-only deploy key on
+# GitHub is precisely what that check is for. `ERROR: Repository not found.` and
+# the SAML SSO line are the same shape. The `grep -v` stays case-sensitive: that
+# trailer is git's own text and git always spells it exactly that way.
 GIT_CAUSE_RE='^(fatal|error|warning|remote|ssh|hint: Updates):|^ ! \[|Permission denied|Could not resolve|Connection refused|Connection timed out'
 git_detail() {
   local clean specific joined="" line total=0 shown=0
   clean="$(printf '%s\n' "$1" | tr -d '\r')"
-  specific="$(printf '%s\n' "$clean" | grep -E "$GIT_CAUSE_RE" \
+  specific="$(printf '%s\n' "$clean" | grep -iE "$GIT_CAUSE_RE" \
                 | grep -v 'Could not read from remote repository')"
-  [ -n "$specific" ] || specific="$(printf '%s\n' "$clean" | grep -E "$GIT_CAUSE_RE")"
+  [ -n "$specific" ] || specific="$(printf '%s\n' "$clean" | grep -iE "$GIT_CAUSE_RE")"
   [ -n "$specific" ] || specific="$(printf '%s\n' "$clean" | grep -v '^[[:space:]]*$')"
   total="$(printf '%s\n' "$specific" | grep -c .)"
   while IFS= read -r line; do

@@ -148,6 +148,32 @@ assert_contains "and the write failure says what to check" "write access" "$OUT"
 assert_contains "and the remote's own refusal survives into the line" \
   "not allowed to push code" "$OUT"
 
+# --- GitHub writes its cause in UPPERCASE, without a remote: prefix -----------
+# The single highest-value case for the whole write check: a read-only deploy key
+# on GitHub is what that check exists to catch. GitHub's own words are
+#
+#   ERROR: The key you are authenticating with has been marked as read only.
+#   fatal: Could not read from remote repository.
+#
+# and a case-sensitive cause pattern misses the first line, matches the trailer,
+# and hands the operator the trailer - Finding 5's exact defect surviving where it
+# costs most. `ERROR: Repository not found.` and the SAML SSO line are identical in
+# shape. The CR is in the fixture because that is how it really arrives.
+make_repo "$TMP/deploykey"
+cat > "$TMP/ghdeploykey" <<'EOF'
+#!/bin/sh
+printf 'ERROR: The key you are authenticating with has been marked as read only.\r\n' >&2
+exit 1
+EOF
+chmod +x "$TMP/ghdeploykey"
+( cd "$TMP/deploykey" && git config remote.origin.receivepack "$TMP/ghdeploykey" ) >/dev/null 2>&1
+run_start "$TMP/deploykey" --check
+assert_eq "a read-only deploy key blocks" "1" "$RC"
+assert_contains "GitHub's uppercase ERROR: line survives into the table" \
+  "ERROR: The key you are authenticating with has been marked as read only" "$OUT"
+assert_eq "and the generic trailer does not stand in for it" "" \
+  "$(printf '%s' "$OUT" | grep -o 'refused: fatal: Could not read from remote repository')"
+
 # --- the diagnostic must survive, and tail -1 threw it away -------------------
 # git's transport failures end on a wrapped continuation ("...and the repository
 # exists."), so the operator got a fragment plus a double full stop while the line
@@ -191,7 +217,7 @@ assert_contains "no credential on an https remote is a warn, not an ok" "warn  t
 assert_eq "and it no longer calls that correct for an SSH remote" "" \
   "$(printf '%s' "$OUT" | grep -o 'correct for an SSH remote')"
 assert_contains "and it names what was looked for" \
-  "no GIT_AUTH_HEADER, GIT_TOKEN, GIT_TOKEN_FILE or .git-token" "$OUT"
+  "no readable GIT_AUTH_HEADER, GIT_TOKEN, GIT_TOKEN_FILE or .git-token" "$OUT"
 assert_contains "and says what to do about it on an https remote" "ssh://" "$OUT"
 
 # The status must be DERIVED from the description, not asserted over it: describe

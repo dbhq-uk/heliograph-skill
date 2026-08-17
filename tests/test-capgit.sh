@@ -44,10 +44,28 @@ EOF
   chmod +x "$1/git"
 }
 
-run_cap_git() {  # run_cap_git <fakebindir> [VAR=VAL ...]
+run_cap_git() {  # run_cap_git <fakebindir> [VAR=VAL ...] - STDOUT only
   local bin="$1"; shift
   ( cd "$TMP" && env -i HOME="$TMP" PATH="$bin:$PATH" "$@" \
       bash -c ". \"$TOOLKIT/caplib.sh\"; cap_git ls-remote origin" )
+}
+
+# run_cap_git_err <fakebindir> [VAR=VAL ...] - STDERR only.
+#
+# A separate helper rather than `2>&1` on run_cap_git: the fake git writes its
+# report to STDOUT and every assertion in this file parses that report, so merging
+# the streams would let them match on diagnostics instead. bash writes an
+# arithmetic error to stderr, so without this an assertion about one can never
+# fail. test-auth.sh's both() exists for the same reason.
+#
+# The braces are shellcheck's preferred spelling for "stderr only": stdout is
+# discarded inside the group, then the group's stderr becomes its stdout, which is
+# what the caller captures. `2>&1 >/dev/null` does the same thing and reads as a
+# mistake (SC2069).
+run_cap_git_err() {
+  local bin="$1"; shift
+  ( cd "$TMP" && { env -i HOME="$TMP" PATH="$bin:$PATH" "$@" \
+      bash -c ". \"$TOOLKIT/caplib.sh\"; cap_git ls-remote origin" >/dev/null; } 2>&1 )
 }
 
 TOKEN=s3cr3t-token-value
@@ -132,12 +150,20 @@ assert_contains "GIT_CONFIG_COUNT=08: git is invoked at all" \
   "ls-remote origin" "$(printf '%s\n' "$out" | sed -n 's/^ARGV: //p')"
 assert_eq "GIT_CONFIG_COUNT=08: 8 is read as decimal, so the count becomes 9" \
   "9" "$(printf '%s\n' "$out" | sed -n 's/^COUNT: //p')"
-assert_eq "GIT_CONFIG_COUNT=08: no arithmetic error reaches the output" "" \
-  "$(printf '%s\n' "$out" | grep -o 'value too great for base')"
 
-out="$(run_cap_git "$TMP/octal" GIT_TOKEN="$TOKEN" GIT_CONFIG_COUNT=007)"
-assert_eq "GIT_CONFIG_COUNT=007: still decimal" \
-  "8" "$(printf '%s\n' "$out" | sed -n 's/^COUNT: //p')"
+# bash writes the arithmetic error to STDERR, so this has to read stderr or it can
+# never fail. It could not, before: it passed with the 10#$n fix removed, which
+# makes an assertion decoration rather than a guard.
+assert_eq "GIT_CONFIG_COUNT=08: and no arithmetic error on stderr either" "" \
+  "$(run_cap_git_err "$TMP/octal" GIT_TOKEN="$TOKEN" GIT_CONFIG_COUNT=08 \
+       | grep -o 'value too great for base')"
+
+# 009 rather than 007: 007 is 7 in octal AND in decimal, so it passes either way
+# and distinguishes nothing. 009 is not a legal octal literal, so this fails
+# without the fix, which is what makes it worth having.
+out="$(run_cap_git "$TMP/octal" GIT_TOKEN="$TOKEN" GIT_CONFIG_COUNT=009)"
+assert_eq "GIT_CONFIG_COUNT=009: a multi-digit pad is still decimal" \
+  "10" "$(printf '%s\n' "$out" | sed -n 's/^COUNT: //p')"
 
 # --- version gate, pinned at its edges -----------------------------------------
 # git 2.9.5 matters most here: it pins a NUMERIC comparison. A future refactor

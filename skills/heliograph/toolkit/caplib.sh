@@ -268,7 +268,16 @@ cap_auth_describe() {
   # `ok` line saying the credential was right immediately above a FAIL telling
   # the reader to check the credential - the commonest first-run state the
   # preflight exists to diagnose, reported as two contradictions.
-  printf 'none: no GIT_AUTH_HEADER, GIT_TOKEN, GIT_TOKEN_FILE or .git-token, so git is used unmodified'
+  #
+  # "no READABLE" rather than "no": _cap_token_source gates the file candidates on
+  # [ -r ], so a GIT_TOKEN_FILE that exists but cannot be read - a root-owned
+  # mounted secret seen by a non-root container process, which is the realistic
+  # case in PRs 3 and 4 - is skipped and lands here. Saying "no GIT_TOKEN_FILE"
+  # then flatly denies a variable the operator did set, and sends them looking for
+  # something they already provided. One word closes it without duplicating the
+  # precedence list outside _cap_token_source, which is the thing this file exists
+  # to keep in one place.
+  printf 'none: no readable GIT_AUTH_HEADER, GIT_TOKEN, GIT_TOKEN_FILE or .git-token, so git is used unmodified'
 }
 
 # git 2.31 (March 2021) honours GIT_CONFIG_COUNT. Older git ignores it SILENTLY,
