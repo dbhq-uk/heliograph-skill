@@ -63,6 +63,35 @@ A token that works against the host's REST API tells you nothing about whether
 git can authenticate. They are different credentials on different paths. Test the
 one you need.
 
+## The ref the preflight negotiates
+
+Every `./start.sh` run, `--check` included, negotiates
+`refs/heads/heliograph-write-check` with the remote. Anyone administering the git
+host will see that name in an audit log, so it is worth being able to answer for
+it.
+
+It is a `git push --dry-run`. No ref is created, no objects are transferred and
+nothing is left on the server. What it does is complete the handshake with
+`git-receive-pack`, which is the service write access is granted on, and that is
+the only way to establish that this credential may write before an hour-long run
+captures a log it then cannot deliver. Read access is not write access, and
+learning the difference afterwards costs a whole round trip through an operator
+who cannot debug the machine.
+
+The ref deliberately does not exist. A dry run against a branch that does exist is
+refused locally as a non-fast-forward the moment the checkout is behind origin,
+which is the ordinary state, and that refusal says nothing at all about the
+credential.
+
+It proves the credential is allowed to write. It does not prove a particular ref
+would survive a `pre-receive` hook or a branch-name ruleset, because a dry run
+sends no pack and those hooks never run.
+
+The name is fixed rather than generated, and that is for the host's administrator
+rather than for us: it is greppable, it carries the tool's name so nobody takes it
+for someone's abandoned branch, and when the question comes the answer is the same
+every time.
+
 ## If the push fails anyway
 
 `cap_push` commits the log locally and prints the path. Nothing is lost; it needs
