@@ -174,6 +174,36 @@ assert_contains "GitHub's uppercase ERROR: line survives into the table" \
 assert_eq "and the generic trailer does not stand in for it" "" \
   "$(printf '%s' "$OUT" | grep -o 'refused: fatal: Could not read from remote repository')"
 
+# --- a GitLab-style banner is furniture, and it ate the whole budget ----------
+# GitLab wraps its refusal in bare `remote:` lines and `remote: =====` rules.
+# They start with `remote:`, so they match the cause pattern, and they spent all
+# three lines of git_detail's budget: the operator got
+#   remote:; remote: ==============================; remote: (+6 more line(s)...)
+# and the sentence saying WHY was counted among the "more". The budget has to be
+# spent on sentences.
+make_repo "$TMP/gitlabbanner"
+cat > "$TMP/glbanner" <<'EOF'
+#!/bin/sh
+printf 'remote: \n' >&2
+printf 'remote: ========================================================\n' >&2
+printf 'remote: \n' >&2
+printf 'remote: GitLab: You are not allowed to push code to protected branches on this project.\n' >&2
+printf 'remote: \n' >&2
+printf 'remote: ========================================================\n' >&2
+printf 'remote: \n' >&2
+exit 1
+EOF
+chmod +x "$TMP/glbanner"
+( cd "$TMP/gitlabbanner" && git config remote.origin.receivepack "$TMP/glbanner" ) >/dev/null 2>&1
+run_start "$TMP/gitlabbanner" --check
+assert_eq "a banner-wrapped refusal still blocks" "1" "$RC"
+assert_contains "the sentence that says why survives the budget" \
+  "You are not allowed to push code to protected branches" "$OUT"
+assert_eq "a separator rule never spends a line of it" "" \
+  "$(printf '%s' "$OUT" | grep -o 'remote: ====')"
+assert_eq "nor does a bare remote: line" "" \
+  "$(printf '%s' "$OUT" | grep -oE 'remote:(;| \(\+)')"
+
 # --- the diagnostic must survive, and tail -1 threw it away -------------------
 # git's transport failures end on a wrapped continuation ("...and the repository
 # exists."), so the operator got a fragment plus a double full stop while the line

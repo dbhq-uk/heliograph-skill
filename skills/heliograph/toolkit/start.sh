@@ -104,12 +104,32 @@ report() {
 # trailer is git's own text and git always spells it exactly that way.
 GIT_CAUSE_RE='^(fatal|error|warning|remote|ssh|hint: Updates):|^ ! \[|Permission denied|Could not resolve|Connection refused|Connection timed out'
 git_detail() {
-  local clean specific joined="" line total=0 shown=0
+  local clean specific trimmed joined="" line total=0 shown=0
   clean="$(printf '%s\n' "$1" | tr -d '\r')"
   specific="$(printf '%s\n' "$clean" | grep -iE "$GIT_CAUSE_RE" \
                 | grep -v 'Could not read from remote repository')"
   [ -n "$specific" ] || specific="$(printf '%s\n' "$clean" | grep -iE "$GIT_CAUSE_RE")"
   [ -n "$specific" ] || specific="$(printf '%s\n' "$clean" | grep -v '^[[:space:]]*$')"
+  # A GitLab-style refusal is mostly furniture: a bare `remote:` above and below
+  # the message, and `remote: =========` rules around it. Those lines match the
+  # cause pattern (they start `remote:`) but carry nothing, and they ate the
+  # three-line budget, so the operator got
+  #
+  #   remote:; remote: ====================================; remote: (+4 more...)
+  #
+  # and not one word of why the push was refused. Discard them BEFORE the budget
+  # is applied, so the budget is spent on sentences.
+  #
+  # The "(+N more)" count below is taken after this, and therefore means: lines
+  # that carried a cause and were withheld for LENGTH. Furniture is not in it,
+  # deliberately - "there are also six blank banner lines" is not a reason to go
+  # back to a machine nobody can log into.
+  #
+  # Guarded, because a remote whose whole output is furniture would otherwise be
+  # reported as "git printed no diagnostic", which would be a lie about a remote
+  # that printed plenty. In that case the furniture is all there is, so show it.
+  trimmed="$(printf '%s\n' "$specific" | grep -vE '^[[:space:]]*remote:[-=*[:space:]]*$')"
+  [ -n "$trimmed" ] && specific="$trimmed"
   total="$(printf '%s\n' "$specific" | grep -c .)"
   while IFS= read -r line; do
     [ "$shown" -ge 3 ] && break
