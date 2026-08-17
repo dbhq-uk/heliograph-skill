@@ -46,6 +46,11 @@ as a `warn` about history and does not block; anything else blocks. The failure
 this prevents is an hour-long step that captures perfect evidence and cannot
 deliver it.
 
+What it proves is that the credential may write. It does not prove a particular
+ref would survive a `pre-receive` hook or a branch-name ruleset, because a dry run
+sends no pack and those hooks never run. `references/transport.md` explains the
+ref itself, for whoever finds the name in a git host's audit log.
+
 It also reports which credential is in force, by mechanism and length, **never by
 value**: `cap_auth_describe` shares one precedence list with `_cap_auth_header`, so
 what it reports cannot disagree with what git uses.
@@ -279,7 +284,7 @@ chain or gate on.
 | `cap_section <out> <title...>` | a labelled divider, teed to both the log and the terminal |
 | `cap_run <out> <cmd...>` | run a command; strip ANSI, redact, **timestamp every line**, `tee -a`, return the real exit code via `PIPESTATUS` |
 | `cap_footer <out> <rc>` | finished-UTC / exit-code / OK-or-FAILED block |
-| `cap_redact` | stdin filter masking `password=`, `Bearer ...`, `Basic ...`, private keys. Honours `REDACT=0` |
+| `cap_redact` | stdin filter masking `password=`, `Bearer ...`, `Basic ...`, a credential in a URL (`https://user:pw@host` and the bare `https://token@host`), private keys. Honours `REDACT=0` |
 | `cap_git <args...>` | `git`, with an auth header attached when a token is configured (HTTPS remotes only) |
 | `cap_auth_describe` | which credential mechanism is in force, by name and length. Never the value |
 | `cap_push <out> <msg>` | stage **only** that file, commit, `pull --rebase`, push. On failure prints the local path instead of dying - a failed push must never lose the log |

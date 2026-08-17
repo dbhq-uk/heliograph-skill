@@ -169,8 +169,9 @@ investigation.
 Logs are committed and pushed, so anything a command prints is in git history
 permanently.
 
-- `cap_redact` masks the obvious shapes (`password=`, `Bearer`, `Basic`, private
-  keys). It is a safety net, **not** a guarantee. Never deliberately run
+- `cap_redact` masks the obvious shapes (`password=`, `Bearer`, `Basic`, a
+  credential carried in a URL, private keys). It is a safety net, **not** a
+  guarantee. Never deliberately run
   something that prints a secret.
 - **Name secrets, never read them.** Listing secret *names* settles "does this
   exist here". The value is never the question.

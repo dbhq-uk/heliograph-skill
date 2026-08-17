@@ -157,7 +157,7 @@ committing it is how a run escapes a machine nobody can reach.
 
 Because logs are committed and pushed, anything a command prints is in git
 history permanently. `cap_redact` masks the obvious shapes (`password=`,
-`Bearer`, `Basic`, private keys) on the way out. **It is a safety net, not a
+`Bearer`, `Basic`, a credential carried in a URL, private keys) on the way out. **It is a safety net, not a
 guarantee.** Do not run things that print secrets, and keep the transport repo
 private.
 
