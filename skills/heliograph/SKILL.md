@@ -171,8 +171,7 @@ permanently.
 
 - `cap_redact` masks the obvious shapes (`password=`, `Bearer`, `Basic`, a
   credential carried in a URL, private keys). It is a safety net, **not** a
-  guarantee. Never deliberately run
-  something that prints a secret.
+  guarantee. Never deliberately run something that prints a secret.
 - **Name secrets, never read them.** Listing secret *names* settles "does this
   exist here". The value is never the question.
 - The transport repo's `.gitignore` blocks the usual carriers. Do not `git add
