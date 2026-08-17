@@ -205,15 +205,28 @@ credential() {
   # People really do arrive with the token-in-URL form (transport.md says so), and
   # git redacts userinfo in its own messages while this did not: the whole
   # https://ci-user:glpat-...@host/... went to stdout, which in PR 3 and PR 4 is
-  # container stdout. cap_redact does not catch this shape either, so mask it
-  # here. Only a `user:password@` between `://` and the first `/` is touched, so
-  # git@host:path, ssh://git@host:2222/... and a local filesystem path all pass
-  # through unaltered.
+  # container stdout. cap_redact cannot help here - it filters what passes through
+  # cap_run, and this table is printed directly - so mask it on the way out.
+  #
+  # Two rules, in this order, mirroring cap_redact and for the same reasons:
+  #   1. `user:password@` between `://` and the first `/`.
+  #   2. the BARE `https://TOKEN@host/...` form, which rule 1 misses because rule
+  #      1 requires a colon, and which is the commonest GitHub PAT clone URL
+  #      there is. Running it second means the colon rule 1 just inserted sits
+  #      inside the span rule 2 would need, so rule 2 cannot re-match its output.
+  # Rule 2 masks a legitimate `https://username@host/...` username as well. That
+  # is deliberate: nothing can tell a username from a token in that position, and
+  # a leaked PAT costs incomparably more than a hidden username. It is confined to
+  # http/https because a bare userinfo on ssh:// is a login name carrying no
+  # secret. git@host:path, ssh://git@host:2222/... and a local filesystem path all
+  # still pass through unaltered.
   #
   # Kept in a variable because "did masking change anything" is also how the token
   # line below knows the URL carries its own credential. One expression, so the
   # two cannot disagree about what counts as one.
-  masked="$(printf '%s' "$url" | sed -E 's#(://[^/@:]*):[^/@]*@#\1:***@#')"
+  masked="$(printf '%s' "$url" | sed -E \
+              -e 's#(://[^/@:]*):[^/@]*@#\1:***@#' \
+              -e 's#(https?://)[^/@:]*@#\1***@#I')"
   report ok remote "$masked  ($scheme)"
 
   case "$scheme" in

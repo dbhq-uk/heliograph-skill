@@ -248,6 +248,28 @@ assert_contains "the rest of the URL still is, or the line diagnoses nothing" \
 assert_contains "and the token line says the URL carries its own credential" \
   "The remote URL carries its own credential" "$OUT"
 
+# --- and so is a BARE token in the remote URL, which has no colon at all --------
+# `https://ghp_...@github.com/org/repo.git` is the commonest GitHub PAT clone URL
+# there is, and the mask above requires a colon, so this form was printed verbatim
+# AND reported as "none" - the preflight telling an operator no credential is
+# configured while git was about to authenticate with the one in the URL.
+make_repo "$TMP/urlbaretoken"
+( cd "$TMP/urlbaretoken" \
+    && git remote set-url origin https://ghp_SUPERSECRETPAT@github.invalid/p/t.git \
+  ) >/dev/null 2>&1
+RC=0
+OUT="$( cd "$TMP/urlbaretoken" \
+        && env -u GIT_AUTH_HEADER -u GIT_TOKEN -u GIT_TOKEN_FILE \
+               HOME="$TMP/urlbaretoken" ./start.sh --check 2>&1 )" || RC=$?
+assert_eq "a bare token in the remote URL is never printed" "" \
+  "$(printf '%s' "$OUT" | grep -o ghp_SUPERSECRETPAT)"
+assert_contains "the host and path still are, or the line diagnoses nothing" \
+  "https://***@github.invalid/p/t.git" "$OUT"
+# The masked-vs-original comparison is what decides this, so masking the bare form
+# is also what stops the token line reporting a bare "none" for it.
+assert_contains "and the bare form counts as a credential too" \
+  "The remote URL carries its own credential" "$OUT"
+
 # ssh and local remotes must come through untouched: masking a colon in
 # git@host:path would make the line useless for the transport we recommend.
 make_repo "$TMP/urlssh"

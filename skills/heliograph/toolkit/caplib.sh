@@ -79,11 +79,36 @@ cap_result() {
 # caught: allowing `/` in the class lets the pattern run past a path segment and
 # mask an `@` that belongs to a path, and losing evidence is the more expensive
 # mistake here. Best effort, as the paragraph above says.
+#
+# The BARE userinfo form - `https://ghp_TOKEN@github.com/org/repo.git`, no colon
+# and no password - is masked by a second rule, because the rule above REQUIRES a
+# colon and this is the commonest GitHub PAT clone URL there is. Order is
+# load-bearing: the colon rule runs first, so by the time the bare rule looks, a
+# password form already reads `user:***REDACTED***@` and the colon now sitting
+# between `://` and `@` is excluded by the bare rule's character class, which
+# cannot therefore re-match it. The other order would mask the username and leave
+# the password.
+#
+# A deliberate trade-off, taken with eyes open: `https://username@github.com/...`
+# is a legitimate, non-secret form and this masks the username too. That is the
+# right call. Nothing in a line of text can tell a username from a token in that
+# position; the cost of hiding a username is a name the reader can find elsewhere
+# in seconds, and the cost of missing a token is a live PAT sitting in a git
+# history that cannot be unpublished. This is NOT the `/` trade-off above - that
+# one is about not running past a path segment, and the classes here stay exactly
+# as narrow for exactly that reason.
+#
+# The bare rule is limited to http/https because that is where the risk lives. A
+# bare userinfo on an ssh:// remote is a login name (`ssh://git@host:2222/...` is
+# the form this skill recommends) and carries no secret, so masking it would
+# delete evidence from every log for nothing. `ssh://user:pass@host` is still
+# caught by the colon rule, which stays scheme-neutral.
 cap_redact() {
   if [ "${REDACT:-1}" = "0" ]; then cat; return 0; fi
   sed -u -E \
     -e "s/((password|passwd|pwd|secret|token|api[_-]?key|client_secret|sas|connectionstring)[\"\x27]?[[:space:]]*[:=][[:space:]]*[\"\x27]?)[^\"\x27[:space:],;}]+/\1***REDACTED***/gI" \
     -e "s#(://[^/@:[:space:]]*):[^/@[:space:]]*@#\1:***REDACTED***@#g" \
+    -e "s#(https?://)[^/@:[:space:]]*@#\1***REDACTED***@#gI" \
     -e "s/(Bearer[[:space:]]+)[A-Za-z0-9._~+\/-]{16,}=*/\1***REDACTED***/g" \
     -e "s/(Basic[[:space:]]+)[A-Za-z0-9+\/]{16,}=*/\1***REDACTED***/g" \
     -e "s/-----BEGIN [A-Z ]*PRIVATE KEY-----/***REDACTED PRIVATE KEY***/g"
