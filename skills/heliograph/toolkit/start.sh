@@ -212,8 +212,9 @@ credential() {
   #   1. `user:password@` between `://` and the first `/`.
   #   2. the BARE `https://TOKEN@host/...` form, which rule 1 misses because rule
   #      1 requires a colon, and which is the commonest GitHub PAT clone URL
-  #      there is. Running it second means the colon rule 1 just inserted sits
-  #      inside the span rule 2 would need, so rule 2 cannot re-match its output.
+  #      there is. Rule 2 cannot re-mask rule 1's output: rule 1 leaves a colon
+  #      between `://` and the `@`, and rule 2's class excludes `:`. That also
+  #      makes the two commute, so the order is for reading, not correctness.
   # Rule 2 masks a legitimate `https://username@host/...` username as well. That
   # is deliberate: nothing can tell a username from a token in that position, and
   # a leaked PAT costs incomparably more than a hidden username. It is confined to

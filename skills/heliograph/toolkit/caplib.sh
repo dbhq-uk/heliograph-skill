@@ -81,13 +81,17 @@ cap_result() {
 # mistake here. Best effort, as the paragraph above says.
 #
 # The BARE userinfo form - `https://ghp_TOKEN@github.com/org/repo.git`, no colon
-# and no password - is masked by a second rule, because the rule above REQUIRES a
-# colon and this is the commonest GitHub PAT clone URL there is. Order is
-# load-bearing: the colon rule runs first, so by the time the bare rule looks, a
-# password form already reads `user:***REDACTED***@` and the colon now sitting
-# between `://` and `@` is excluded by the bare rule's character class, which
-# cannot therefore re-match it. The other order would mask the username and leave
-# the password.
+# and no password - needs a second rule, because the rule above REQUIRES a colon
+# and this is the commonest GitHub PAT clone URL there is.
+#
+# It cannot re-mask what the colon rule already produced: `user:***REDACTED***@`
+# leaves a colon between `://` and the `@`, and the bare rule's class excludes
+# `:`, so that match just fails. Masking is therefore idempotent, which matters
+# because a log line quoting an earlier log line is ordinary. The exclusion was
+# measured rather than assumed, and the same property makes the two rules
+# COMMUTE - swapping them gives byte-identical output on every shape tried. The
+# colon rule is written first because it is the more specific of the two, not
+# because correctness rests on it.
 #
 # A deliberate trade-off, taken with eyes open: `https://username@github.com/...`
 # is a legitimate, non-secret form and this masks the username too. That is the
