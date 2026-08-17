@@ -211,7 +211,7 @@ preflight() {
 # key is useless against an https:// remote and a token useless against git@.
 # So branch on the scheme, then report the mechanism without its value.
 credential() {
-  local url masked scheme fps rc desc st
+  local url pw_masked masked scheme fps rc desc st
   url="$(git remote get-url origin 2>/dev/null)"
   if [ -z "$url" ]; then
     report FAIL remote "no remote named 'origin'. Git is the transport, so there is nowhere to push a log. Add one: git remote add origin <url>"
@@ -233,21 +233,30 @@ credential() {
   #   2. the BARE `https://TOKEN@host/...` form, which rule 1 misses because rule
   #      1 requires a colon, and which is the commonest GitHub PAT clone URL
   #      there is. Rule 2 cannot re-mask rule 1's output: rule 1 leaves a colon
-  #      between `://` and the `@`, and rule 2's class excludes `:`. That also
-  #      makes the two commute, so the order is for reading, not correctness.
+  #      between `://` and the `@`, and rule 2's class excludes `:`. (Each rule
+  #      does still match its OWN output, but `***` is a fixed point of the
+  #      substitution, so that pass is a no-op. Two mechanisms, one result;
+  #      caplib.sh spells them out.)
   # Rule 2 masks a legitimate `https://username@host/...` username as well. That
   # is deliberate: nothing can tell a username from a token in that position, and
   # a leaked PAT costs incomparably more than a hidden username. It is confined to
   # http/https because a bare userinfo on ssh:// is a login name carrying no
-  # secret. git@host:path, ssh://git@host:2222/... and a local filesystem path all
-  # still pass through unaltered.
+  # secret. `?`, `#` and `,` are excluded from its class so that it stops at the
+  # end of the authority rather than masking the HOST out of a line like
+  # `https://host?email=foo@bar.com`; `%` is its delimiter so the `#` in that class
+  # needs no escaping, which inside a bracket expression would wrongly exclude
+  # backslash too. git@host:path, ssh://git@host:2222/... and a local filesystem
+  # path all still pass through unaltered.
   #
-  # Kept in a variable because "did masking change anything" is also how the token
-  # line below knows the URL carries its own credential. One expression, so the
-  # two cannot disagree about what counts as one.
-  masked="$(printf '%s' "$url" | sed -E \
-              -e 's#(://[^/@:]*):[^/@]*@#\1:***@#' \
-              -e 's#(https?://)[^/@:]*@#\1***@#I')"
+  # The INTERMEDIATE result is kept, not just the final one. "Did masking change
+  # anything" is how the token line below knows the URL carries a credential, and
+  # WHICH rule changed it is the difference between "there is a password in here"
+  # and "there is a bare userinfo and it may be a username with nothing behind it".
+  # Asserting the first for the second is a false diagnosis, and the operator
+  # cannot check it against the remote line because that is masked too. Same two
+  # expressions, so this can never disagree with what was printed.
+  pw_masked="$(printf '%s' "$url" | sed -E 's#(://[^/@:]*):[^/@]*@#\1:***@#')"
+  masked="$(printf '%s' "$pw_masked" | sed -E 's%(https?://)[^/@:?#,]*@%\1***@%I')"
   report ok remote "$masked  ($scheme)"
 
   case "$scheme" in
@@ -283,12 +292,27 @@ credential() {
       case "$desc" in
         none*)
           st=warn
-          if [ "$masked" != "$url" ]; then
-            # A token in the remote URL IS a credential, just not one caplib
-            # supplies. A bare "none" here reads as "you have nothing configured"
-            # while git is about to authenticate perfectly well, so say which one
-            # is in play and what the known trap with it is.
+          # THREE states, not two, and the difference is which masking rule fired.
+          #
+          # A `user:password@` URL really does carry a credential and git really
+          # will use it: a bare "none" there reads as "you have nothing
+          # configured" while git is about to authenticate perfectly well.
+          #
+          # A BARE userinfo is genuinely ambiguous, and saying "carries its own
+          # credential" for it is a false diagnosis. `https://ci-user@host/x` has
+          # a username and nothing to authenticate with; `https://ghp_...@host/x`
+          # is the commonest GitHub PAT clone URL there is. Nothing here can tell
+          # them apart - that is the same limit the masking trade-off is built on -
+          # so this names both rather than picking one, and the operator, who can
+          # see their own remote, settles it in a second. They cannot settle it
+          # from the line above, because that userinfo is masked too.
+          #
+          # The remedial advice is the same in all three states, so it is the
+          # diagnosis that has to be honest, not the instruction.
+          if [ "$pw_masked" != "$url" ]; then
             desc="$desc. The remote URL carries its own credential, so git will use that instead of a header. Several hosts reject the token-in-URL form outright, so if the read check below fails, set GIT_TOKEN or re-point origin at ssh:// rather than suspecting the token"
+          elif [ "$masked" != "$url" ]; then
+            desc="$desc. The remote URL carries a bare userinfo and no password. If that is a token, git will authenticate with it; if it is a plain username, there is nothing there to authenticate with and this remote has no credential at all. Set GIT_TOKEN, or re-point origin at ssh:// and use an agent key, which references/transport.md recommends"
           else
             desc="$desc. An https remote needs one of those. Set GIT_TOKEN, or re-point origin at ssh:// and use an agent key, which references/transport.md recommends"
           fi ;;

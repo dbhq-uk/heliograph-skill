@@ -84,14 +84,26 @@ cap_result() {
 # and no password - needs a second rule, because the rule above REQUIRES a colon
 # and this is the commonest GitHub PAT clone URL there is.
 #
-# It cannot re-mask what the colon rule already produced: `user:***REDACTED***@`
-# leaves a colon between `://` and the `@`, and the bare rule's class excludes
-# `:`, so that match just fails. Masking is therefore idempotent, which matters
-# because a log line quoting an earlier log line is ordinary. The exclusion was
-# measured rather than assumed, and the same property makes the two rules
-# COMMUTE - swapping them gives byte-identical output on every shape tried. The
-# colon rule is written first because it is the more specific of the two, not
-# because correctness rests on it.
+# Re-running the filter over its own output changes nothing, and TWO DIFFERENT
+# mechanisms deliver that. They are worth telling apart, because only one of them
+# is a non-match:
+#
+#   - Across the pair: the bare rule cannot fire on the colon rule's output at
+#     all. `user:***REDACTED***@` leaves a `:` between `://` and the `@`, and the
+#     bare rule's class excludes `:`, so the match fails outright. That is what
+#     stops a masked password having its username eaten as well.
+#   - Each rule against its OWN output: the match still succeeds.
+#     `https://***REDACTED***@h` does match the bare rule a second time, and
+#     `https://u:***REDACTED***@h` does match the colon rule a second time. What
+#     saves it is that `***REDACTED***` is a FIXED POINT of the substitution, so
+#     the line comes back byte-identical. Idempotence by fixed point, not by
+#     non-match. Do not "simplify" the replacement into something that is not.
+#
+# Both were measured, not reasoned about; a log line quoting an earlier log line
+# is ordinary. The same `:` exclusion makes the two rules COMMUTE - swapping them
+# gives byte-identical output on every shape tried. The colon rule is written
+# first because it is the more specific of the two, not because correctness rests
+# on it.
 #
 # A deliberate trade-off, taken with eyes open: `https://username@github.com/...`
 # is a legitimate, non-secret form and this masks the username too. That is the
@@ -107,12 +119,34 @@ cap_result() {
 # the form this skill recommends) and carries no secret, so masking it would
 # delete evidence from every log for nothing. `ssh://user:pass@host` is still
 # caught by the colon rule, which stays scheme-neutral.
+#
+# `?`, `#` and `,` are excluded from the bare rule's class for the same reason `/`
+# is: without them the pattern runs past the end of the authority and masks the
+# HOST, which is a different and worse loss than the username the trade-off above
+# argues for. All three of these were left alone before the bare rule existed:
+#
+#   https://host?email=foo@bar.com            -> https://***REDACTED***@bar.com
+#   CSV,https://docs.invalid,admin@corp.com   -> CSV,***REDACTED***@corp.com
+#   https://example.com#anchor@1              -> https://***REDACTED***@1
+#
+# No PAT format uses `?`, `#` or `,`, so nothing is given up on the catching side.
+# The COLON rule is deliberately NOT given the same exclusions: its second class
+# is a PASSWORD, and a password really can contain any of the three, so excluding
+# them there would stop masking real credentials.
+#
+# This one rule uses `%` as its s/// delimiter rather than `#`. That is not
+# cosmetic. With `#` as the delimiter the `#` inside the bracket expression has to
+# be either relied upon to parse (GNU sed does cope) or escaped as `\#`, and
+# escaping it is actively wrong: inside a POSIX bracket expression a backslash is
+# a literal member, so `[^/@:?\#,...]` silently excludes BACKSLASH as well, and a
+# token containing one stops being masked. Measured, not assumed. `%` removes the
+# question.
 cap_redact() {
   if [ "${REDACT:-1}" = "0" ]; then cat; return 0; fi
   sed -u -E \
     -e "s/((password|passwd|pwd|secret|token|api[_-]?key|client_secret|sas|connectionstring)[\"\x27]?[[:space:]]*[:=][[:space:]]*[\"\x27]?)[^\"\x27[:space:],;}]+/\1***REDACTED***/gI" \
     -e "s#(://[^/@:[:space:]]*):[^/@[:space:]]*@#\1:***REDACTED***@#g" \
-    -e "s#(https?://)[^/@:[:space:]]*@#\1***REDACTED***@#gI" \
+    -e "s%(https?://)[^/@:?#,[:space:]]*@%\1***REDACTED***@%gI" \
     -e "s/(Bearer[[:space:]]+)[A-Za-z0-9._~+\/-]{16,}=*/\1***REDACTED***/g" \
     -e "s/(Basic[[:space:]]+)[A-Za-z0-9+\/]{16,}=*/\1***REDACTED***/g" \
     -e "s/-----BEGIN [A-Z ]*PRIVATE KEY-----/***REDACTED PRIVATE KEY***/g"

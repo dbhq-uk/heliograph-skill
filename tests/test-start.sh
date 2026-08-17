@@ -333,7 +333,8 @@ assert_eq "a token in the remote URL is never printed" "" \
 assert_contains "the rest of the URL still is, or the line diagnoses nothing" \
   "https://ci-user:***@git.invalid/p/t.git" "$OUT"
 # A bare "none" would read as "you have nothing configured" while git is about to
-# authenticate perfectly well with what the URL carries.
+# authenticate perfectly well with what the URL carries. This is the ONE state in
+# which that sentence is true, and it is true because the colon rule fired.
 assert_contains "and the token line says the URL carries its own credential" \
   "The remote URL carries its own credential" "$OUT"
 
@@ -354,10 +355,60 @@ assert_eq "a bare token in the remote URL is never printed" "" \
   "$(printf '%s' "$OUT" | grep -o ghp_SUPERSECRETPAT)"
 assert_contains "the host and path still are, or the line diagnoses nothing" \
   "https://***@github.invalid/p/t.git" "$OUT"
-# The masked-vs-original comparison is what decides this, so masking the bare form
-# is also what stops the token line reporting a bare "none" for it.
-assert_contains "and the bare form counts as a credential too" \
-  "The remote URL carries its own credential" "$OUT"
+# Deliberately NOT "carries its own credential". That sentence is true of a
+# user:password URL and merely PLAUSIBLE here: a bare userinfo is a token on
+# GitHub and a bare username everywhere else, and nothing in start.sh can tell
+# which - the same limit the masking trade-off is built on. So the line names both
+# readings rather than asserting one.
+assert_contains "a bare userinfo is reported as the ambiguity it is" \
+  "The remote URL carries a bare userinfo and no password" "$OUT"
+assert_contains "and it says a token in that position does authenticate" \
+  "If that is a token, git will authenticate with it" "$OUT"
+
+# --- the same shape with a plain username, which carries nothing ---------------
+# The false diagnosis this distinction exists to prevent: masking the bare form
+# made `https://ci-user@host/x` compare unequal to the original, so the preflight
+# asserted "the remote URL carries its own credential, so git will use that
+# instead of a header" about a URL with nothing in it to authenticate with. Base
+# printed the correct advice here, so this was a regression against base.
+#
+# The operator cannot check that claim against the remote line either, because the
+# username is masked out of it. Which RULE fired is the only thing that separates
+# the two, and it is what start.sh now branches on.
+make_repo "$TMP/urlusername"
+( cd "$TMP/urlusername" \
+    && git remote set-url origin https://ci-user@git.invalid/p/t.git ) >/dev/null 2>&1
+RC=0
+OUT="$( cd "$TMP/urlusername" \
+        && env -u GIT_AUTH_HEADER -u GIT_TOKEN -u GIT_TOKEN_FILE \
+               HOME="$TMP/urlusername" ./start.sh --check 2>&1 )" || RC=$?
+assert_eq "a username-only remote is never told it carries a credential" "" \
+  "$(printf '%s' "$OUT" | grep -o 'carries its own credential')"
+assert_contains "it is told the truth: userinfo, and no password" \
+  "The remote URL carries a bare userinfo and no password" "$OUT"
+assert_contains "and that a plain username authenticates with nothing" \
+  "there is nothing there to authenticate with" "$OUT"
+# The remedial advice is right in every state, so it must survive the branching.
+assert_contains "and the remedy base printed is still there" \
+  "Set GIT_TOKEN, or re-point origin at ssh://" "$OUT"
+
+# The three states must be genuinely distinct, or the branch is decoration. This
+# needs its OWN fixture: $TMP/notoken has an empty ./.git-token by now, so its
+# describe returns "no header is sent" and never reaches the none* branch where
+# these sentences are appended - an assertion there could not fail either way.
+make_repo "$TMP/urlnouserinfo"
+( cd "$TMP/urlnouserinfo" \
+    && git remote set-url origin https://git.invalid/p/t.git ) >/dev/null 2>&1
+RC=0
+OUT="$( cd "$TMP/urlnouserinfo" \
+        && env -u GIT_AUTH_HEADER -u GIT_TOKEN -u GIT_TOKEN_FILE \
+               HOME="$TMP/urlnouserinfo" ./start.sh --check 2>&1 )" || RC=$?
+assert_contains "a no-userinfo remote still reaches the none branch" \
+  "none: no readable GIT_AUTH_HEADER" "$OUT"
+assert_eq "and gets neither of the two URL sentences" "" \
+  "$(printf '%s' "$OUT" | grep -o 'The remote URL carries')"
+assert_contains "just the plain requirement" \
+  "An https remote needs one of those" "$OUT"
 
 # ssh and local remotes must come through untouched: masking a colon in
 # git@host:path would make the line useless for the transport we recommend.

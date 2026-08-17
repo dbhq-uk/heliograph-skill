@@ -71,10 +71,19 @@ assert_eq "a legitimate username in that position is masked too, deliberately" \
   "https://***REDACTED***@git.invalid/x.git" \
   "$(red "https://ci-user@git.invalid/x.git")"
 
-# Order: the colon rule runs first, so the bare rule only ever sees a span with a
-# colon already in it and cannot re-match. Masking must therefore be idempotent -
-# an already-masked URL echoed back by a later command comes out identical rather
-# than gaining a second layer.
+# Re-running the filter over its own output must change nothing: a log line that
+# quotes an earlier log line is ordinary. TWO mechanisms deliver that, and the
+# assertions below cover both, because only one of them is a non-match.
+#
+#   - ACROSS the pair, it is a non-match: the bare rule cannot fire on
+#     `user:***REDACTED***@` at all, because the colon rule left a `:` in the span
+#     and the bare rule's class excludes `:`.
+#   - Against its OWN output, each rule DOES match again - `https://***REDACTED***@h`
+#     matches the bare rule a second time - and comes back identical only because
+#     `***REDACTED***` is a fixed point of the substitution.
+#
+# The first two assertions exercise the fixed-point path; the last exercises the
+# non-match path.
 assert_eq "an already-masked bare URL is not masked a second time" \
   "https://***REDACTED***@github.com/org/repo.git" \
   "$(red "https://***REDACTED***@github.com/org/repo.git")"
@@ -89,6 +98,40 @@ assert_eq "the two rules never both fire on one URL" "1" \
 assert_eq "and the colon form is not then re-masked as a bare one" \
   "https://u:***REDACTED***@h/x.git" \
   "$(red "https://u:pw@h/x.git")"
+
+# --- the bare rule must stop at the end of the AUTHORITY, not just at a path ----
+# The class stopped only at `/`, `:`, `@` and whitespace, so a `?`, `#` or `,`
+# between the host and a later `@` let it run on and mask the HOST. All three of
+# these were untouched before the bare rule existed, so it was new evidence loss,
+# and it is a different loss from the one the username trade-off argues for: a
+# reader can look a username up, but a line that has lost its hostname is
+# worthless. No PAT format uses `?`, `#` or `,`, so excluding them gives up
+# nothing on the catching side.
+#
+# To mutation-test: drop `?#,` from the bare rule's class and these three fail.
+assert_eq "a query string is not mistaken for userinfo" \
+  "https://host?email=foo@bar.com" \
+  "$(red "https://host?email=foo@bar.com")"
+
+assert_eq "a comma-separated line does not lose its host" \
+  "CSV,https://docs.invalid,admin@corp.com" \
+  "$(red "CSV,https://docs.invalid,admin@corp.com")"
+
+assert_eq "a fragment is not mistaken for userinfo" \
+  "https://example.com#anchor@1" \
+  "$(red "https://example.com#anchor@1")"
+
+# The exclusions must not have cost the catch they exist alongside.
+assert_eq "and a real bare token is still masked" \
+  "https://***REDACTED***@github.com/o/r.git" \
+  "$(red "https://ghp_SUPERSECRETTOKEN@github.com/o/r.git")"
+
+# `%` is the delimiter on that rule precisely so the `#` in its class needs no
+# escaping. Escaping it as `\#` would, inside a POSIX bracket expression, exclude
+# BACKSLASH as well and silently stop masking a token containing one.
+assert_eq "a token containing a backslash is still masked" \
+  "https://***REDACTED***@host/x.git" \
+  "$(red "https://back\\slash@host/x.git")"
 
 # --- left alone ---------------------------------------------------------------
 # The ssh case stays here on purpose now that bare userinfo is masked for http and
