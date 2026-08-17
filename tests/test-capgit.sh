@@ -118,6 +118,27 @@ assert_eq "ambient config: ours is appended at slot 1" \
 assert_eq "ambient config: with the real header value" \
   "$EXPECTED_HDR" "$(printf '%s\n' "$out" | sed -n 's/^VALUE_1: //p')"
 
+# --- a zero-padded ambient count must not be read as octal ---------------------
+# bash reads a leading zero as octal, and a zero-padded count is a natural thing
+# for a template or a wrapper to emit. `$((n + 1))` on GIT_CONFIG_COUNT=08 raised
+# "08: value too great for base", which under `set -uo pipefail` is a FATAL
+# arithmetic error: git was never invoked, and inside a `bash -c` caller the shell
+# died with it. The all-digits guard cannot catch this, because 08 IS all digits.
+fake_git "$TMP/octal" 2.43.0
+out="$(run_cap_git "$TMP/octal" GIT_TOKEN="$TOKEN" GIT_CONFIG_COUNT=08 \
+  GIT_CONFIG_KEY_0=http.proxy GIT_CONFIG_VALUE_0=http://corp:3128)"
+
+assert_contains "GIT_CONFIG_COUNT=08: git is invoked at all" \
+  "ls-remote origin" "$(printf '%s\n' "$out" | sed -n 's/^ARGV: //p')"
+assert_eq "GIT_CONFIG_COUNT=08: 8 is read as decimal, so the count becomes 9" \
+  "9" "$(printf '%s\n' "$out" | sed -n 's/^COUNT: //p')"
+assert_eq "GIT_CONFIG_COUNT=08: no arithmetic error reaches the output" "" \
+  "$(printf '%s\n' "$out" | grep -o 'value too great for base')"
+
+out="$(run_cap_git "$TMP/octal" GIT_TOKEN="$TOKEN" GIT_CONFIG_COUNT=007)"
+assert_eq "GIT_CONFIG_COUNT=007: still decimal" \
+  "8" "$(printf '%s\n' "$out" | sed -n 's/^COUNT: //p')"
+
 # --- version gate, pinned at its edges -----------------------------------------
 # git 2.9.5 matters most here: it pins a NUMERIC comparison. A future refactor
 # to something like `[[ "$v" > "2.31" ]]` would compare as strings, under which

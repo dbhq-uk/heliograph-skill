@@ -309,8 +309,16 @@ cap_git() {
     # bash instead tries to execute the literal string as a command. `env`
     # parses its own NAME=VALUE arguments regardless, and still composes with
     # (rather than replacing) the rest of the inherited environment.
+    #
+    # `10#` is not decoration. bash reads a leading zero as octal, so an ambient
+    # GIT_CONFIG_COUNT=08 (a zero-padded count is a natural thing for a
+    # template or a wrapper to emit) made `$((n + 1))` raise "08: value too great
+    # for base", which under `set -uo pipefail` is a FATAL arithmetic error: git
+    # was never invoked at all, and inside a `bash -c` caller it killed the
+    # shell. The digit guard above cannot catch it, because 08 IS all digits.
     local n="${GIT_CONFIG_COUNT:-0}"
     case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    n=$((10#$n))
     env "GIT_CONFIG_COUNT=$((n + 1))" \
         "GIT_CONFIG_KEY_$n=http.extraHeader" \
         "GIT_CONFIG_VALUE_$n=$hdr" \
