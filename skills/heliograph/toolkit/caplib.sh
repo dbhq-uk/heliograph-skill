@@ -219,13 +219,32 @@ cap_footer() {
 # what git actually uses would be worse than no report at all.
 #
 # Prints exactly one of:
-#   header:GIT_AUTH_HEADER   env:GIT_TOKEN   file:<path>   none
+#   header:GIT_AUTH_HEADER   env:GIT_TOKEN   file:<path>   unreadable:<path>   none
 _cap_token_source() {
   [ -n "${GIT_AUTH_HEADER:-}" ] && { printf 'header:GIT_AUTH_HEADER'; return 0; }
   [ -n "${GIT_TOKEN:-}" ]       && { printf 'env:GIT_TOKEN'; return 0; }
   local f
   for f in "${GIT_TOKEN_FILE:-}" ./.git-token "$HOME/.git-token"; do
     [ -n "$f" ] && [ -r "$f" ] && { printf 'file:%s' "$f"; return 0; }
+  done
+  # Nothing readable. Before reporting that, find out whether a candidate is
+  # sitting right there with the wrong permissions: a root-owned mounted secret
+  # read by a non-root process is exactly how Docker and Kubernetes present one,
+  # and "GIT_TOKEN_FILE is not set" is a flat denial of something the operator did
+  # set. The path is the actionable fact, so it has to reach them.
+  #
+  # A SECOND pass, deliberately, and not a widening of the loop above. Selecting
+  # an unreadable candidate inside that loop would let an unreadable
+  # GIT_TOKEN_FILE shadow a readable ./.git-token and send the push out with no
+  # credential at all - a worse failure than the one being reported. Precedence
+  # is unchanged: this runs only once the readable list is exhausted, so a
+  # readable candidate always wins.
+  #
+  # `-e` is "it is there and I cannot read it". A GIT_TOKEN_FILE inside a
+  # directory the process cannot even traverse fails -e as well as -r, and still
+  # reports none: bash cannot tell that apart from the file not existing.
+  for f in "${GIT_TOKEN_FILE:-}" ./.git-token "$HOME/.git-token"; do
+    [ -n "$f" ] && [ -e "$f" ] && { printf 'unreadable:%s' "$f"; return 0; }
   done
   printf 'none'
 }
@@ -247,10 +266,12 @@ _cap_auth_header() {
     # whatever the caller was printing. An unreadable file yields no token, which
     # is already handled below.
     file:*)   tok="$(sed -n '1p' "${src#file:}" 2>/dev/null)" ;;
-    # Also reached when a variable this needs (e.g. $HOME, under `set -u`) is
-    # unset: the inner _cap_token_source subshell aborts, src comes back empty,
-    # and we land here. Status is deliberately 0 either way - stdout being empty
-    # is the signal callers must use; do not rely on $? to detect "no credential".
+    # Reached by `none`, by `unreadable:<path>` (there is nothing to send: the
+    # file cannot be read), and when a variable this needs (e.g. $HOME, under
+    # `set -u`) is unset - the inner _cap_token_source subshell aborts, src comes
+    # back empty, and we land here. Status is deliberately 0 either way - stdout
+    # being empty is the signal callers must use; do not rely on $? to detect
+    # "no credential".
     *)        return 0 ;;
   esac
   [ -z "$tok" ] && return 0
@@ -290,6 +311,22 @@ cap_auth_describe() {
                 printf '%s (%s chars)' "${src#file:}" "${#tok}"
               fi
               return 0 ;;
+              # The file IS there; the process just cannot read it. Root-owned
+              # secret mounts in Docker and Kubernetes arrive exactly this way,
+              # read by a non-root container process. This used to fall through
+              # to the enumeration below, which said "no readable ... GIT_TOKEN_FILE
+              # ...": true, and useless. The operator does not need a list of
+              # things to try, they need the one fact that closes it - the file
+              # they configured is right where they put it and the permissions
+              # are wrong. So name the path and name the user who cannot read it.
+              #
+              # Deliberately still says "no header is sent": start.sh derives the
+              # ok/warn status from that phrase, so an unreadable credential warns
+              # exactly as an empty one does.
+    unreadable:*)
+              printf '%s exists but is not readable by %s, so no header is sent and the credential you configured is not the one in use. Fix that file'"'"'s permissions, or run as a user that can read it' \
+                "${src#unreadable:}" "$(whoami 2>/dev/null || echo 'this user')"
+              return 0 ;;
   esac
   # Scheme-neutral on purpose. This function cannot see the remote, so it named
   # what it looked for and left the conclusion to the caller. It used to assert
@@ -298,14 +335,14 @@ cap_auth_describe() {
   # the reader to check the credential - the commonest first-run state the
   # preflight exists to diagnose, reported as two contradictions.
   #
-  # "no READABLE" rather than "no": _cap_token_source gates the file candidates on
-  # [ -r ], so a GIT_TOKEN_FILE that exists but cannot be read - a root-owned
-  # mounted secret seen by a non-root container process, which is the realistic
-  # case in PRs 3 and 4 - is skipped and lands here. Saying "no GIT_TOKEN_FILE"
-  # then flatly denies a variable the operator did set, and sends them looking for
-  # something they already provided. One word closes it without duplicating the
-  # precedence list outside _cap_token_source, which is the thing this file exists
-  # to keep in one place.
+  # Reached only when NOTHING was found at all. A file that is there but cannot be
+  # read no longer lands here - _cap_token_source reports it as `unreadable:`, and
+  # the branch above names the path, which is the actionable fact. Saying "no
+  # GIT_TOKEN_FILE" for it flatly denied a variable the operator did set.
+  #
+  # "no READABLE" stays, and still earns its place: a GIT_TOKEN_FILE inside a
+  # directory this process cannot traverse fails `-e` as well as `-r`, so it is
+  # indistinguishable from a path that does not exist and does still land here.
   printf 'none: no readable GIT_AUTH_HEADER, GIT_TOKEN, GIT_TOKEN_FILE or .git-token, so git is used unmodified'
 }
 

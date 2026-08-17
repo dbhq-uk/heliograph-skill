@@ -178,13 +178,20 @@ assert_eq "a directory as GIT_TOKEN_FILE prints no sed noise" "" \
 assert_contains "and the wording covers unreadable as well as empty" \
   "is unreadable or its first line is empty, so no header is sent" \
   "$(both "$TMP/empty" GIT_TOKEN_FILE="$TMP/secretsdir")"
-# --- fix: the enumeration must not deny a variable the operator did set ---------
+# --- fix: an unreadable GIT_TOKEN_FILE is a state of its own --------------------
 # _cap_token_source gates the file candidates on [ -r ], so a GIT_TOKEN_FILE that
 # exists but cannot be READ - a root-owned mounted secret seen by a non-root
-# container process, the realistic case in PRs 3 and 4 - is skipped and falls
-# through to the "none" branch. "no GIT_TOKEN_FILE" there flatly denies a variable
-# that is set, and sends the operator looking for something they already provided.
-# One word closes it without duplicating the precedence list.
+# container process, the realistic case in PRs 3 and 4 - was skipped and fell
+# through to the "none" branch. Wording it "no READABLE ... GIT_TOKEN_FILE" stopped
+# that being a lie, but the operator still was not told the fact that closes it:
+# the file is exactly where they put it and the permissions are wrong. So the
+# state is now detected separately and the PATH is named.
+#
+# Detected in a SECOND pass, after the readable list is exhausted, and the
+# precedence assertions below are the point of that: selecting an unreadable
+# candidate inside the first loop would let an unreadable GIT_TOKEN_FILE shadow a
+# readable ./.git-token and push with no credential at all, which is worse than
+# the reporting bug being fixed.
 #
 # Skipped under root, where mode 000 is still readable and the state cannot be
 # built. That is not hypothetical: PR 3's container runs as root, so someone will
@@ -192,11 +199,34 @@ assert_contains "and the wording covers unreadable as well as empty" \
 printf 'a-real-token\n' > "$TMP/unreadable"
 chmod 000 "$TMP/unreadable"
 if [ "$(id -u)" != "0" ]; then
-  assert_contains "an unreadable GIT_TOKEN_FILE does not get flatly denied" \
-    "no readable GIT_AUTH_HEADER, GIT_TOKEN, GIT_TOKEN_FILE or .git-token" \
-    "$(desc "$TMP/empty" GIT_TOKEN_FILE="$TMP/unreadable")"
-  assert_eq "and its contents are still never printed" "" \
+  unreadable_desc="$(desc "$TMP/empty" GIT_TOKEN_FILE="$TMP/unreadable")"
+  assert_eq "source: an unreadable candidate is its own state, not none" \
+    "unreadable:$TMP/unreadable" \
+    "$(src "$TMP/empty" GIT_TOKEN_FILE="$TMP/unreadable")"
+  assert_contains "describe: an unreadable GIT_TOKEN_FILE is named, not denied" \
+    "$TMP/unreadable" "$unreadable_desc"
+  assert_contains "describe: and the actionable fact is the permissions" \
+    "is not readable by" "$unreadable_desc"
+  # start.sh derives ok/warn from this phrase, so an unreadable credential has to
+  # warn exactly as an empty one does rather than reading as an ok.
+  assert_contains "describe: and it still says no header is sent" \
+    "no header is sent" "$unreadable_desc"
+  assert_eq "describe: and it is no longer listed among the things not set" "" \
+    "$(printf '%s' "$unreadable_desc" | grep -o 'no readable GIT_AUTH_HEADER')"
+  assert_eq "describe: and its contents are still never printed" "" \
     "$(both "$TMP/empty" GIT_TOKEN_FILE="$TMP/unreadable" | grep -o a-real-token)"
+  assert_eq "_cap_auth_header sends nothing for it, and prints no noise either" "" \
+    "$(hdr "$TMP/empty" GIT_TOKEN_FILE="$TMP/unreadable" 2>&1)"
+  # The precedence semantics must not have moved. An unreadable GIT_TOKEN_FILE
+  # shadowing a readable ./.git-token would push unauthenticated.
+  assert_eq "source: an unreadable GIT_TOKEN_FILE never shadows a readable ./.git-token" \
+    "file:./.git-token" \
+    "$(src "$TMP/both/work" GIT_TOKEN_FILE="$TMP/unreadable")"
+  assert_eq "and the header still comes from the readable candidate" \
+    "$(basic "" from-cwd)" \
+    "$( cd "$TMP/both/work" && env -i HOME="$TMP/both" PATH="$PATH" \
+          GIT_TOKEN_FILE="$TMP/unreadable" \
+          bash -c ". \"$TOOLKIT/caplib.sh\"; _cap_auth_header" )"
 else
   printf 'skip unreadable GIT_TOKEN_FILE: running as root, where mode 000 is still readable\n'
 fi

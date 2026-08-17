@@ -287,6 +287,37 @@ OUT="$( cd "$TMP/notoken" && "${bare_env[@]}" ./start.sh --check 2>&1 )" || RC=$
 assert_contains "an empty token file is a warn, not an ok" "warn  token" "$OUT"
 assert_contains "and the line says no header is sent" "no header is sent" "$OUT"
 
+# --- a GIT_TOKEN_FILE that is there but cannot be read ------------------------
+# Docker and Kubernetes mount a secret root-owned and hand it to a non-root
+# process, so PRs 3 and 4 make this shape ordinary. The preflight used to list
+# GIT_TOKEN_FILE among the things that were not set, which denies a variable the
+# operator did set and sends them looking for something they already provided.
+# The path and the permissions are the actionable facts.
+#
+# Skipped under root, where mode 000 is still readable and the state cannot be
+# built - PR 3's container runs as root, so someone will run this suite there.
+if [ "$(id -u)" != "0" ]; then
+  make_repo "$TMP/unreadtok"
+  ( cd "$TMP/unreadtok" && git remote set-url origin https://example.invalid/x.git ) >/dev/null 2>&1
+  printf 'a-real-token\n' > "$TMP/unreadable-secret"
+  chmod 000 "$TMP/unreadable-secret"
+  RC=0
+  OUT="$( cd "$TMP/unreadtok" \
+          && env -u GIT_AUTH_HEADER -u GIT_TOKEN HOME="$TMP/unreadtok" \
+                 GIT_TOKEN_FILE="$TMP/unreadable-secret" ./start.sh --check 2>&1 )" || RC=$?
+  assert_contains "an unreadable token file is a warn, not an ok" "warn  token" "$OUT"
+  assert_contains "and the preflight names the file rather than denying it" \
+    "$TMP/unreadable-secret" "$OUT"
+  assert_contains "and says which user cannot read it" "is not readable by" "$OUT"
+  assert_eq "and it no longer reports the file as simply absent" "" \
+    "$(printf '%s' "$OUT" | grep -o 'no readable GIT_AUTH_HEADER')"
+  assert_eq "and the token it could not read is still never printed" "" \
+    "$(printf '%s' "$OUT" | grep -o a-real-token)"
+  chmod 644 "$TMP/unreadable-secret"
+else
+  printf 'skip unreadable GIT_TOKEN_FILE in the preflight: running as root, where mode 000 is still readable\n'
+fi
+
 # --- a token embedded in the remote URL is a credential too --------------------
 # transport.md records that people arrive with this form, git redacts userinfo in
 # its own messages, and cap_redact does not catch this shape. The remote line
