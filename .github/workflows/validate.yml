@@ -15,11 +15,15 @@ jobs:
 
       - name: Check shell scripts parse
         # Root installers included: a syntax error there breaks every install.
+        # tests/ included too. The tests job runs those scripts, so a syntax
+        # error there does get caught - but as a failing test run in a different
+        # job, which reads as "the toolkit is broken" rather than "this file does
+        # not parse". Same corpus as AGENTS.md's local command, so the two agree.
         run: |
           fail=0
           while IFS= read -r s; do
             bash -n "$s" || { echo "Syntax error: $s"; fail=1; }
-          done < <({ find . -maxdepth 1 -name '*.sh'; find skills -name '*.sh'; })
+          done < <({ find . -maxdepth 1 -name '*.sh'; find skills tests -name '*.sh'; })
           exit $fail
 
       - name: Shellcheck
@@ -193,6 +197,15 @@ jobs:
           set +e; PUSH=0 ./run.sh apply >/dev/null 2>&1; rc=$?; set -e
           [ "$rc" = "3" ] || { echo "a state-changing step ran without CONFIRM=yes (exit $rc)"; exit 1; }
 
+  tests:
+    name: Toolkit unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Assertions under tests/
+        run: ./tests/run-tests.sh
+
   # Single required check for branch protection. Adding a job above does not mean
   # remembering to add it to the protection rule - it only needs listing here.
   ci-ok:
@@ -203,6 +216,7 @@ jobs:
       - validate
       - installers
       - toolkit
+      - tests
     steps:
       - name: Fail if any job did not succeed
         run: |

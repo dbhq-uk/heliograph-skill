@@ -21,8 +21,9 @@ Every rule in here was paid for by an investigation that went wrong first.
 skills/heliograph/SKILL.md          # the skill (agent-facing instructions)
 skills/heliograph/references/       # method, runner reference, step-writing, transport, secrets, remote repos
 skills/heliograph/scripts/          # bootstrap.sh - installs the toolkit into a transport repo
-skills/heliograph/toolkit/          # what gets copied out: run.sh, agent.sh, caplib.sh, secret.sh, lib/, steps/
+skills/heliograph/toolkit/          # what gets copied out: start.sh, run.sh, agent.sh, caplib.sh, secret.sh, lib/, steps/
 install.sh / install-codex.sh       # local symlink installers (Claude / Codex)
+tests/                              # plain-bash assertions; run ./tests/run-tests.sh
 ```
 
 **`toolkit/` is a payload, not a library this repo runs.** Nothing in it is
@@ -112,15 +113,22 @@ bootstrapping into a repo that holds anything else.
 
 ```bash
 bash -n install.sh install-codex.sh
-find skills -name '*.sh' -exec bash -n {} +
-claude plugin validate .
-shellcheck skills/heliograph/toolkit/*.sh skills/heliograph/toolkit/lib/*.sh   # if installed
+find skills tests -name '*.sh' -exec bash -n {} +
+shellcheck -S warning $(find . -name '*.sh' -not -path './.git/*')
+jq empty .claude-plugin/plugin.json
+./tests/run-tests.sh
 ```
 
-CI runs the first three plus the frontmatter and install checks. Be honest about
-what none of it covers: **nothing here exercises a capture against a real remote
-machine.** The behaviour that matters is what a log looks like after a round trip
-through someone else's terminal, and no test asserts that.
+CI runs all five over that same corpus, `bash -n` and `shellcheck` included, plus
+the `SKILL.md` frontmatter check, the em dash, hardcoded-install-path and
+probe-truncation greps, both installers, and an end-to-end capture through a
+bootstrapped copy. One difference worth knowing: CI checks the manifest with `jq
+empty` rather than `claude plugin validate .`, which needs the Claude Code CLI, so
+run that separately if you have it.
+
+Be honest about what none of it covers: **nothing here exercises a capture against
+a real remote machine.** The behaviour that matters is what a log looks like after
+a round trip through someone else's terminal, and no test asserts that.
 
 After changing anything under `toolkit/`, verify by hand from a bootstrapped
 copy:
@@ -130,5 +138,8 @@ copy:
 - A step that exits non-zero still writes the footer, still reports the real exit
   code, and still gets committed.
 - `./run.sh <a step that does not exist>` exits 2 having written nothing.
+- `./start.sh --check` from a bootstrapped copy names every blocking problem and
+  what to do about each. A preflight line that reports a problem without saying
+  what to do about it is a defect: the person reading it usually cannot ask you.
 
 Skipping those because CI is green is how the constraints get broken.

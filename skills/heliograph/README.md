@@ -19,8 +19,9 @@ changes; the whole run comes back as a log that is committed and pushed.
 2. **Baseline** with `./run.sh env` before theorising about anything
 3. **One branch per investigation**, one step per question, `TASK.md` holding
    what was measured apart from what was concluded
-4. **The operator runs `./agent.sh` once** and stops relaying. It watches the
-   branch and runs when the request `id` changes
+4. **The operator runs `./start.sh` once** and stops relaying. It proves the
+   machine can capture and that git can push from it, then starts the agent,
+   which watches the branch and runs when the request `id` changes
 5. **Read the whole log**, record the measurement, decide the next step
 
 ## The two properties that make it work
@@ -43,7 +44,7 @@ failed run reads as clearly as a successful one and no round trip is wasted.
 | [`references/remote-repo.md`](references/remote-repo.md) | changing a repo that is also on the far side |
 | [`references/secrets.md`](references/secrets.md) | `secret.sh`, for a value that has to reach the far side |
 | [`scripts/bootstrap.sh`](scripts/bootstrap.sh) | installs the toolkit into a transport repo |
-| [`toolkit/`](toolkit/) | the payload: `run.sh`, `agent.sh`, `caprun.sh`, `caplib.sh`, `secret.sh`, `lib/`, `steps/` |
+| [`toolkit/`](toolkit/) | the payload: `start.sh`, `run.sh`, `agent.sh`, `caprun.sh`, `caplib.sh`, `secret.sh`, `lib/`, `steps/` |
 
 Nothing in `toolkit/` runs from here. It is copied out and runs on a machine you
 will never see, in front of someone who cannot debug it. Edit it accordingly.

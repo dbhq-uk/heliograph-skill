@@ -50,10 +50,11 @@ It is deliberately generic. Ansible, Terraform, Terragrunt, a Kubernetes cluster
 that will not form, a Windows Server box over SSH, a hung service, a failing
 cluster join: anything you can express as a command.
 
-**Better still, nobody relays anything.** The operator starts `./agent.sh` once
-and walks away. It watches the branch, runs what you ask for, and pushes the log
-back. After that the loop is git in both directions, and nobody has to be sitting
-on the far side.
+**Better still, nobody relays anything.** The operator starts `./start.sh` once
+and walks away. It proves the machine can capture and push, then hands off to the
+agent, which watches the branch, runs what you ask for, and pushes the log back.
+After that the loop is git in both directions, and nobody has to be sitting on the
+far side.
 
 ## Two properties that make a log-only loop workable
 
@@ -126,13 +127,14 @@ reads the logs. What you decide is which question to ask next.
 2. **Baseline first.** `./run.sh env` answers what that box actually is: OS, tools, sudo, proxy, DNS, cloud auth, and which commit of the repo is checked out
 3. **One branch per investigation.** `TASK.md` holds the question, the measurements and the conclusions, and keeps the last two apart
 4. **One step per question.** Copy the template, write the probes, register it, push
-5. **The operator pulls and runs**, or `agent.sh` does it unattended
+5. **The operator pulls and runs**, or `./start.sh` checks the machine and starts the agent unattended
 6. **The log comes back over git**, timestamped and complete, whether the step passed or failed
 
 ## What ships
 
 | | |
 |---|---|
+| `start.sh` | the first command on a new machine: proves it can capture and push, then starts the agent |
 | `run.sh` | the step runner. The operator's one command |
 | `agent.sh` | the unattended loop: watches for a request, runs it, pushes. Cancellable mid-run |
 | `caprun.sh` | wrap any ad-hoc command in the same capture and push |
@@ -155,9 +157,9 @@ committing it is how a run escapes a machine nobody can reach.
 
 Because logs are committed and pushed, anything a command prints is in git
 history permanently. `cap_redact` masks the obvious shapes (`password=`,
-`Bearer`, `Basic`, private keys) on the way out. **It is a safety net, not a
-guarantee.** Do not run things that print secrets, and keep the transport repo
-private.
+`Bearer`, `Basic`, a credential carried in a URL, private keys) on the way out.
+**It is a safety net, not a guarantee.** Do not run things that print secrets,
+and keep the transport repo private.
 
 Occasionally a value has to travel the other way: something the far side needs
 and cannot fetch for itself. `secret.sh` carries it as ciphertext, with the

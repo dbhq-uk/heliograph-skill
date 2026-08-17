@@ -87,8 +87,9 @@ before the first one. Every rule in it cost a round trip.
 
 ## 4. Drive it
 
-Ask the operator to run `./agent.sh` once, then stop relaying runs. It watches
-`agent/request` and runs when the `id:` changes:
+Ask the operator to run `./start.sh` once, then stop relaying runs. It checks that
+the machine can capture properly and that git can push from it, then starts the
+agent, which watches `agent/request` and runs when the `id:` changes:
 
 ```
 you       edit agent/request (new id), push ───────────────▶ transport repo
@@ -96,6 +97,9 @@ agent     picks it up within seconds, runs ./run.sh
           pushes agent/status, then the log ───────────────▶ transport repo
 you       poll, read the log, decide the next step ◀────────
 ```
+
+If they want to know whether the machine will work before committing to anything,
+`./start.sh --check` answers that and changes nothing.
 
 The trigger is the **`id`**, not a new commit: docs and step edits land
 constantly and would otherwise fire runs nobody asked for. `stop: yes` ends the
@@ -165,9 +169,9 @@ investigation.
 Logs are committed and pushed, so anything a command prints is in git history
 permanently.
 
-- `cap_redact` masks the obvious shapes (`password=`, `Bearer`, `Basic`, private
-  keys). It is a safety net, **not** a guarantee. Never deliberately run
-  something that prints a secret.
+- `cap_redact` masks the obvious shapes (`password=`, `Bearer`, `Basic`, a
+  credential carried in a URL, private keys). It is a safety net, **not** a
+  guarantee. Never deliberately run something that prints a secret.
 - **Name secrets, never read them.** Listing secret *names* settles "does this
   exist here". The value is never the question.
 - The transport repo's `.gitignore` blocks the usual carriers. Do not `git add
@@ -201,7 +205,7 @@ store the far side has. Details, and why each guard is there:
 | | |
 |---|---|
 | [references/steps.md](references/steps.md) | writing a step, and the traps that cost round trips |
-| [references/runner.md](references/runner.md) | `run.sh`, `agent.sh`, `caprun.sh`, every `cap_*` and knob |
+| [references/runner.md](references/runner.md) | `start.sh`, `run.sh`, `agent.sh`, `caprun.sh`, every `cap_*` and knob |
 | [references/method.md](references/method.md) | how to debug across a gap. The expensive lessons |
 | [references/transport.md](references/transport.md) | how the control node authenticates to the git host |
 | [references/secrets.md](references/secrets.md) | `secret.sh`, for a value that has to reach the far side |
