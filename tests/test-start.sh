@@ -217,6 +217,10 @@ assert_eq "a token in the remote URL is never printed" "" \
   "$(printf '%s' "$OUT" | grep -o glpat-SUPERSECRET)"
 assert_contains "the rest of the URL still is, or the line diagnoses nothing" \
   "https://ci-user:***@git.invalid/p/t.git" "$OUT"
+# A bare "none" would read as "you have nothing configured" while git is about to
+# authenticate perfectly well with what the URL carries.
+assert_contains "and the token line says the URL carries its own credential" \
+  "The remote URL carries its own credential" "$OUT"
 
 # ssh and local remotes must come through untouched: masking a colon in
 # git@host:path would make the line useless for the transport we recommend.

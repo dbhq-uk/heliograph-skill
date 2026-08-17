@@ -178,7 +178,7 @@ preflight() {
 # key is useless against an https:// remote and a token useless against git@.
 # So branch on the scheme, then report the mechanism without its value.
 credential() {
-  local url scheme fps rc desc st
+  local url masked scheme fps rc desc st
   url="$(git remote get-url origin 2>/dev/null)"
   if [ -z "$url" ]; then
     report FAIL remote "no remote named 'origin'. Git is the transport, so there is nowhere to push a log. Add one: git remote add origin <url>"
@@ -196,7 +196,12 @@ credential() {
   # here. Only a `user:password@` between `://` and the first `/` is touched, so
   # git@host:path, ssh://git@host:2222/... and a local filesystem path all pass
   # through unaltered.
-  report ok remote "$(printf '%s' "$url" | sed -E 's#(://[^/@:]*):[^/@]*@#\1:***@#')  ($scheme)"
+  #
+  # Kept in a variable because "did masking change anything" is also how the token
+  # line below knows the URL carries its own credential. One expression, so the
+  # two cannot disagree about what counts as one.
+  masked="$(printf '%s' "$url" | sed -E 's#(://[^/@:]*):[^/@]*@#\1:***@#')"
+  report ok remote "$masked  ($scheme)"
 
   case "$scheme" in
     ssh)
@@ -228,7 +233,15 @@ credential() {
       case "$desc" in
         none*)
           st=warn
-          desc="$desc. An https remote needs one of those. Set GIT_TOKEN, or re-point origin at ssh:// and use an agent key, which references/transport.md recommends" ;;
+          if [ "$masked" != "$url" ]; then
+            # A token in the remote URL IS a credential, just not one caplib
+            # supplies. A bare "none" here reads as "you have nothing configured"
+            # while git is about to authenticate perfectly well, so say which one
+            # is in play and what the known trap with it is.
+            desc="$desc. The remote URL carries its own credential, so git will use that instead of a header. Several hosts reject the token-in-URL form outright, so if the read check below fails, set GIT_TOKEN or re-point origin at ssh:// rather than suspecting the token"
+          else
+            desc="$desc. An https remote needs one of those. Set GIT_TOKEN, or re-point origin at ssh:// and use an agent key, which references/transport.md recommends"
+          fi ;;
         *"no header is sent"*)
           st=warn ;;
       esac
