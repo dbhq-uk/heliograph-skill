@@ -538,4 +538,263 @@ assert_contains "and names the problem" "no executable" "$OUT"
 assert_eq "and it does not leave the partial checkout behind" "" \
   "$(ls -A "$TMP/nostartshvol" 2>/dev/null)"
 
+# =============================================================================
+#  PR 3 task 3 - heliograph.sh: the docker run, as one line
+# =============================================================================
+# This wraps entrypoint.sh, unchanged - it never re-checks a credentialed URL,
+# never re-decides whether to reuse a checkout, never adds a second copy of
+# any refusal entrypoint.sh already owns. So the assertions below are about
+# what THIS FILE is actually responsible for: runtime detection, the
+# build-or-refuse decision, foreground-vs-detach, which mounts appear (and
+# which do not) and how a credential reaches the container without ever
+# landing on this script's own command line - never a re-proof of what
+# tests/test-container.sh already established about entrypoint.sh itself
+# further up this file.
+WRAP="$ROOT/skills/heliograph/toolkit/docker/heliograph.sh"
+
+# wrap <args...> - runs the real wrapper, combined output, bounded at 30s so a
+# defect that hangs cannot wedge the suite. Sets RC/OUT.
+wrap() {
+  RC=0
+  OUT="$(timeout 30 "$WRAP" "$@" 2>&1)" || RC=$?
+}
+
+# wrap_bounded <seconds> <args...> - same, with a caller-chosen bound. Used to
+# prove foreground genuinely blocks (a bound shorter than the stub's own
+# runtime has to fire) and that --detach genuinely returns before it would.
+wrap_bounded() {
+  local t="$1"; shift
+  RC=0
+  OUT="$(timeout "$t" "$WRAP" "$@" 2>&1)" || RC=$?
+}
+
+# --- heliograph.sh never calls the runtime by a hardcoded name -----------------
+# "must work with podman unchanged" only means something if nothing in here
+# ever calls `docker` directly outside of prose (comments, --help text, the
+# tag names of images this file builds/tags itself). Every real invocation
+# goes through "$RUNTIME". Comment lines (leading #) are excluded first, then
+# what remains is checked for "docker" used as a COMMAND WORD - at the start
+# of a line/statement, or straight after a shell operator - rather than
+# merely appearing in a backtick-quoted sentence.
+hardcoded="$(grep -vE '^\s*#' "$WRAP" \
+  | grep -nE '(^|[|&;(]|\bexec[[:space:]])[[:space:]]*"?docker"?[[:space:]]+(run|build|create|image)\b')"
+assert_eq "heliograph.sh never invokes 'docker' directly - only through \$RUNTIME" "" "$hardcoded"
+
+# --- --help --------------------------------------------------------------------
+wrap --help
+assert_eq "--help exits 0" "0" "$RC"
+assert_contains "and describes the wrapper's own contract" "usage: heliograph.sh" "$OUT"
+
+# --- no URL at all: passed straight through to entrypoint.sh -------------------
+# Proves the wrapper does NOT re-validate anything entrypoint.sh already
+# refuses - it is entrypoint.sh's own usage error (exit 2, same message) that
+# should surface here, not a wrapper-invented one.
+wrap --image "$IMAGE" --dockerfile "$DOCKERFILE"
+assert_eq "no URL at all surfaces entrypoint.sh's own usage error, unchanged" "2" "$RC"
+assert_contains "and it is entrypoint.sh's own message, not a wrapper rewrite of it" \
+  "no repository URL" "$OUT"
+
+# =============================================================================
+#  decision 1: build the image if it is absent
+# =============================================================================
+# A tag distinct from $IMAGE, so these assertions genuinely start from "the
+# image does not exist yet" without disturbing $IMAGE, which the rest of this
+# file (both above and below this block) depends on staying built.
+WRAP_TAG="heliograph-wraptest:local"
+"$RUNTIME" image rm -f "$WRAP_TAG" >/dev/null 2>&1
+
+wrap --image "$WRAP_TAG" --dockerfile "$DOCKERFILE" "https://example.invalid/x.git"
+assert_contains "a missing image is built automatically, announced as such" \
+  "no image tagged $WRAP_TAG - building it now" "$OUT"
+assert_eq "and it genuinely exists afterward" "0" \
+  "$("$RUNTIME" image inspect "$WRAP_TAG" >/dev/null 2>&1; echo $?)"
+
+wrap --image "$WRAP_TAG" --dockerfile "$DOCKERFILE" "https://example.invalid/x.git"
+assert_eq "a second run against the same tag does NOT rebuild it" "" \
+  "$(printf '%s' "$OUT" | grep -o 'building it now')"
+
+# --no-build: refuse rather than build, and genuinely build nothing
+"$RUNTIME" image rm -f "$WRAP_TAG" >/dev/null 2>&1
+wrap --image "$WRAP_TAG" --dockerfile "$DOCKERFILE" --no-build "https://example.invalid/x.git"
+assert_eq "--no-build refuses rather than building when the image is missing" "1" "$RC"
+assert_contains "and names the missing tag" "no image tagged $WRAP_TAG" "$OUT"
+assert_contains "and names --no-build as the reason it did not just build it" \
+  "--no-build was given" "$OUT"
+assert_eq "and nothing was actually built" "1" \
+  "$("$RUNTIME" image inspect "$WRAP_TAG" >/dev/null 2>&1; echo $?)"
+
+# --build: rebuild even though the tag already exists
+wrap --image "$WRAP_TAG" --dockerfile "$DOCKERFILE" "https://example.invalid/x.git" >/dev/null 2>&1
+wrap --image "$WRAP_TAG" --dockerfile "$DOCKERFILE" --build "https://example.invalid/x.git"
+assert_contains "--build rebuilds even though the tag already exists" \
+  "rebuilding $WRAP_TAG (--build was given)" "$OUT"
+
+"$RUNTIME" image rm -f "$WRAP_TAG" >/dev/null 2>&1
+
+# --print/--dry-run: never builds, never runs - only shows the command
+wrap --print --image "heliograph-does-not-exist-anywhere:local" "https://example.invalid/x.git"
+assert_eq "--print never tries to build a missing image" "0" "$RC"
+assert_contains "and shows the command it would have run" \
+  "heliograph-does-not-exist-anywhere:local" "$OUT"
+
+# =============================================================================
+#  decision 2: foreground by default, --detach opts into the background
+# =============================================================================
+# A pre-populated volume rather than a bind-mounted bare repo: heliograph.sh
+# has no generic pass-through mount of its own (by design - see decision 4),
+# so these use the SAME already-cloned/reuse path entrypoint.sh's own tests
+# rely on (a working tree whose origin matches the URL this run is given).
+# The stub start.sh sleeps, standing in for a long agent-loop run for exactly
+# as long as it takes to prove which of foreground/detach genuinely blocks.
+mkdir -p "$TMP/fgvol" "$TMP/bgvol"
+for v in fgvol bgvol; do
+  ( cd "$TMP/$v" && git init -q \
+      && printf '#!/usr/bin/env bash\nsleep 20\necho STUB-SLEEP-DONE\n' > start.sh && chmod +x start.sh \
+      && git remote add origin "file:///srv/repo.git" && $GIT add -A && $GIT commit -qm init ) >/dev/null 2>&1
+done
+
+FG_NAME="heliograph-wraptest-fg-$$"
+"$RUNTIME" rm -f "$FG_NAME" >/dev/null 2>&1
+wrap_bounded 8 --image "$IMAGE" --dockerfile "$DOCKERFILE" --volume "$TMP/fgvol" --name "$FG_NAME" \
+  "file:///srv/repo.git"
+assert_eq "foreground (the default) genuinely blocks - an 8s bound fires while the 20s stub is still running" \
+  "124" "$RC"
+"$RUNTIME" rm -f "$FG_NAME" >/dev/null 2>&1
+
+BG_NAME="heliograph-wraptest-bg-$$"
+"$RUNTIME" rm -f "$BG_NAME" >/dev/null 2>&1
+wrap_bounded 8 --image "$IMAGE" --dockerfile "$DOCKERFILE" --volume "$TMP/bgvol" --detach --name "$BG_NAME" \
+  "file:///srv/repo.git"
+assert_eq "--detach returns well inside the same 8s bound rather than blocking" "0" "$RC"
+assert_eq "and the daemon confirms a container by that name genuinely exists" "0" \
+  "$("$RUNTIME" inspect "$BG_NAME" >/dev/null 2>&1; echo $?)"
+assert_eq "and it is genuinely still running the 20s stub, not finished and coincidentally fast" \
+  "true" "$("$RUNTIME" inspect --format '{{.State.Running}}' "$BG_NAME" 2>/dev/null)"
+"$RUNTIME" rm -f "$BG_NAME" >/dev/null 2>&1
+
+# =============================================================================
+#  decision 4: no mounts by default - each opt-in mount states its own reason
+# =============================================================================
+NOMOUNT_NAME="heliograph-wraptest-nomount-$$"
+"$RUNTIME" rm -f "$NOMOUNT_NAME" >/dev/null 2>&1
+wrap --image "$IMAGE" --dockerfile "$DOCKERFILE" --detach --name "$NOMOUNT_NAME" "https://example.invalid/x.git"
+assert_eq "a detached run with none of --volume/--token-file/--ssh returns 0" "0" "$RC"
+assert_eq "and produces a container with NO mounts at all" "[]" \
+  "$("$RUNTIME" inspect --format '{{json .Mounts}}' "$NOMOUNT_NAME" 2>/dev/null)"
+"$RUNTIME" rm -f "$NOMOUNT_NAME" >/dev/null 2>&1
+
+# --volume: the one stated reason is restart reuse (decision 3's mechanism)
+mkdir -p "$TMP/plainvol"
+VOL_NAME="heliograph-wraptest-vol-$$"
+"$RUNTIME" rm -f "$VOL_NAME" >/dev/null 2>&1
+wrap --image "$IMAGE" --dockerfile "$DOCKERFILE" --detach --name "$VOL_NAME" --volume "$TMP/plainvol" \
+  "https://example.invalid/x.git"
+vol_mounts="$("$RUNTIME" inspect --format '{{json .Mounts}}' "$VOL_NAME" 2>/dev/null)"
+assert_contains "--volume mounts exactly the given host directory" "$TMP/plainvol" "$vol_mounts"
+assert_contains "onto the working directory entrypoint.sh actually reads (HELIOGRAPH_WORKDIR)" \
+  "/home/heliograph/repo" "$vol_mounts"
+"$RUNTIME" rm -f "$VOL_NAME" >/dev/null 2>&1
+
+# --token-file: mounted read-only, and wired to GIT_TOKEN_FILE end to end
+TOKFILE_TOKEN="heliograph-wrapper-fixture-tok-4e9a1c"
+printf '%s\n' "$TOKFILE_TOKEN" > "$TMP/wraptoken"
+TOK_NAME="heliograph-wraptest-tok-$$"
+"$RUNTIME" rm -f "$TOK_NAME" >/dev/null 2>&1
+wrap --image "$IMAGE" --dockerfile "$DOCKERFILE" --detach --name "$TOK_NAME" --token-file "$TMP/wraptoken" \
+  "https://example.invalid/x.git"
+tok_mounts="$("$RUNTIME" inspect --format '{{json .Mounts}}' "$TOK_NAME" 2>/dev/null)"
+assert_contains "--token-file mounts the given file" "$TMP/wraptoken" "$tok_mounts"
+assert_contains "read-only, not read-write" '"RW":false' "$tok_mounts"
+full_inspect="$("$RUNTIME" inspect "$TOK_NAME" 2>/dev/null)"
+assert_eq "and the token's VALUE never appears in inspect - only the mounted path does" "" \
+  "$(printf '%s' "$full_inspect" | grep -o "$TOKFILE_TOKEN")"
+"$RUNTIME" rm -f "$TOK_NAME" >/dev/null 2>&1
+
+# end to end: the wired GIT_TOKEN_FILE is what entrypoint.sh actually reports
+wrap --image "$IMAGE" --dockerfile "$DOCKERFILE" --token-file "$TMP/wraptoken" "https://example.invalid/x.git"
+assert_eq "the fixture token is never printed, even while the clone fails" "" \
+  "$(printf '%s' "$OUT" | grep -o "$TOKFILE_TOKEN")"
+assert_contains "and entrypoint.sh names the in-container path this flag mounted it at" \
+  "/run/heliograph/git-token" "$OUT"
+assert_contains "and its length, not its value (proves the CONTENT reached entrypoint.sh)" \
+  "(${#TOKFILE_TOKEN} chars)" "$OUT"
+
+# =============================================================================
+#  credential handling: never on this script's own command line
+# =============================================================================
+# GIT_TOKEN already exported in the CALLING shell - proves bare `-e NAME`
+# passthrough (the value read by the runtime from ITS OWN environment) rather
+# than `-e NAME=value` (the value literally in this script's argv). --print
+# makes the constructed command directly observable without needing to catch
+# a live process's argv mid-flight.
+ENV_TOKEN="heliograph-wrapper-env-fixture-77d2"
+GIT_TOKEN="$ENV_TOKEN" wrap --print --image "$IMAGE" "https://example.invalid/x.git"
+assert_contains "GIT_TOKEN already in the environment is forwarded by bare name" "-e GIT_TOKEN" "$OUT"
+assert_eq "and its VALUE never appears in the printed command line" "" \
+  "$(printf '%s' "$OUT" | grep -o "$ENV_TOKEN")"
+
+REPO_URL="https://example.invalid/env-repo-url.git" wrap --print --image "$IMAGE" -- --check
+assert_contains "REPO_URL already in the environment is forwarded by bare name too" "-e REPO_URL" "$OUT"
+
+# =============================================================================
+#  SSH forwarding - not optional, and the ownership problem
+# =============================================================================
+if ! command -v ssh-agent >/dev/null 2>&1 || ! command -v ssh-keygen >/dev/null 2>&1; then
+  printf 'skip --ssh end-to-end tests: no ssh-agent/ssh-keygen on this machine to build a fixture\n'
+else
+  # --ssh without SSH_AUTH_SOCK set at all: refuse, rather than silently
+  # mounting nothing and leaving the operator to discover that later.
+  SAVED_AUTH_SOCK="${SSH_AUTH_SOCK:-}"
+  unset SSH_AUTH_SOCK
+  wrap --image "$IMAGE" --dockerfile "$DOCKERFILE" --ssh "https://example.invalid/x.git"
+  assert_eq "--ssh with no SSH_AUTH_SOCK set refuses" "1" "$RC"
+  assert_contains "and names the problem" "SSH_AUTH_SOCK is not set" "$OUT"
+  [ -n "$SAVED_AUTH_SOCK" ] && export SSH_AUTH_SOCK="$SAVED_AUTH_SOCK"
+
+  # A real, disposable agent and key - not a stand-in. socket ownership is
+  # exactly what this section proves, so it needs a socket that really is
+  # owned the way a forwarded operator's agent would be.
+  eval "$(ssh-agent -s)" >/dev/null
+  ssh-keygen -q -t ed25519 -N '' -f "$TMP/sshtestkey"
+  ssh-add "$TMP/sshtestkey" >/dev/null 2>&1
+  HOST_FP="$(ssh-add -l 2>/dev/null | awk '{print $2}')"
+
+  mkdir -p "$TMP/sshvol"
+  ( cd "$TMP/sshvol" && git init -q \
+      && printf '#!/usr/bin/env bash\nprintf "AGENT_KEYS: "\nssh-add -l\n' > start.sh && chmod +x start.sh \
+      && git remote add origin "file:///srv/repo.git" && $GIT add -A && $GIT commit -qm init ) >/dev/null 2>&1
+
+  if [ -z "$HOST_FP" ]; then
+    printf 'skip --ssh positive/contrast tests: could not add a fixture key to a local ssh-agent\n'
+  else
+    wrap --image "$IMAGE" --dockerfile "$DOCKERFILE" --ssh --volume "$TMP/sshvol" "file:///srv/repo.git"
+    assert_contains "the forwarded, uid-matched socket is usable as the heliograph user inside the container" \
+      "$HOST_FP" "$OUT"
+
+    # Contrast, bypassing the wrapper entirely: an image built for a
+    # deliberately WRONG uid, given the exact same bind-mounted socket. If
+    # this also worked, the positive result above would be an accident of
+    # this host's own uid rather than proof the matching step does anything.
+    WRONG_UID=13345
+    BAD_TAG="heliograph-wraptest:local-baduid"
+    if "$RUNTIME" build -f "$DOCKERFILE" -t "$BAD_TAG" --build-arg "HELIOGRAPH_UID=$WRONG_UID" "$DOCKER_DIR" \
+        >/dev/null 2>&1; then
+      badout="$(timeout 20 "$RUNTIME" run --rm \
+        -v "$SSH_AUTH_SOCK:/run/heliograph/ssh-agent.sock" -e SSH_AUTH_SOCK=/run/heliograph/ssh-agent.sock \
+        -v "$TMP/sshvol:/home/heliograph/repo" -e HELIOGRAPH_WORKDIR=/home/heliograph/repo \
+        "$BAD_TAG" "file:///srv/repo.git" 2>&1)"
+      assert_eq "a uid-MISMATCHED image cannot use the same forwarded socket - the matching step is load-bearing" \
+        "" "$(printf '%s' "$badout" | grep -o "$HOST_FP")"
+      "$RUNTIME" image rm -f "$BAD_TAG" >/dev/null 2>&1
+    else
+      printf 'skip the uid-mismatch contrast: could not build an image at uid %s on this machine\n' "$WRONG_UID"
+    fi
+  fi
+
+  ssh-agent -k >/dev/null 2>&1
+  unset SSH_AUTH_SOCK SSH_AGENT_PID
+fi
+
+"$RUNTIME" image rm -f "$IMAGE-uid$(id -u)" >/dev/null 2>&1
+
 t_summary
