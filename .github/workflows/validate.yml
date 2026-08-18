@@ -72,6 +72,14 @@ jobs:
 
       # House style is a plain hyphen. Cheap to assert, and it drifts back in
       # every time a paragraph is pasted from somewhere else.
+      #
+      # *.yml is deliberately NOT added to this scan, even though house style
+      # (and this PR's own task brief) applies to workflow prose too: this
+      # very step's own search pattern is a literal em dash character inside
+      # a *.yml file, so including *.yml here would make the check match
+      # itself on every run, unconditionally. publish-image.yml and this
+      # job's own new comments were checked by hand for the task instead (see
+      # the task 4 report) - genuinely clean, not merely unchecked.
       - name: No em dashes
         run: |
           hits=$(grep -rn $'—' --include='*.md' --include='*.sh' --include='*.json' . || true)
@@ -206,6 +214,56 @@ jobs:
       - name: Assertions under tests/
         run: ./tests/run-tests.sh
 
+  # PR 3 task 4's own requirement: tests/test-container.sh builds the image
+  # from skills/heliograph/toolkit/docker/Dockerfile as its own first step
+  # (see that file's header comment), and it is already part of the sweep
+  # the `tests` job above runs via run-tests.sh. That alone is not enough:
+  # test-container.sh SKIPS LOUDLY, not fails, when no container runtime is
+  # reachable - the right behaviour on a developer laptop that may not have
+  # Docker, and exactly the wrong one to let pass unnoticed in CI. A green
+  # `tests` job in which test-container.sh quietly skipped would read
+  # identically to one where every property it checks was actually verified,
+  # which is the precise failure shape this task exists to prevent. Nothing
+  # in the `tests` job above asserts against that; this job does, as its own
+  # named, required check, so the failure shows up as "the container job
+  # broke" rather than being invisible inside a job that still says "tests
+  # passed".
+  #
+  # GitHub-hosted ubuntu-latest runners ship Docker with the daemon already
+  # running, so the skip path should never trigger here - if it does, that is
+  # itself the finding: something about the runner changed underneath this
+  # workflow, and this job is what makes that loud instead of silent.
+  #
+  # This also doubles as task 4's PR-time build check ("prove the Dockerfile
+  # still builds, without pushing"): a passing `docker build` is the very
+  # first thing test-container.sh does, before any assertion runs, and this
+  # job never logs in to a registry or carries any push credential - there is
+  # no way for it to publish anything even by accident.
+  container:
+    name: Container image builds, and its tests run unskipped
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run tests/test-container.sh and refuse a silent skip
+        run: |
+          set +e
+          ./tests/test-container.sh 2>&1 | tee /tmp/test-container.out
+          rc="${PIPESTATUS[0]}"
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::tests/test-container.sh failed (exit $rc)"
+            exit 1
+          fi
+          # assert.sh's own vocabulary is "ok"/"FAIL" (see tests/assert.sh) -
+          # nothing else in this file's output starts a line with "SKIP", so
+          # this is unambiguously test-container.sh's own loud-skip banner,
+          # not a coincidental match.
+          if grep -q '^SKIP' /tmp/test-container.out; then
+            echo "::error::tests/test-container.sh skipped instead of running - no container runtime was found. GitHub-hosted ubuntu-latest runners ship Docker, so this must never happen in CI; investigate the runner rather than ignore this."
+            exit 1
+          fi
+
   # Single required check for branch protection. Adding a job above does not mean
   # remembering to add it to the protection rule - it only needs listing here.
   ci-ok:
@@ -217,6 +275,7 @@ jobs:
       - installers
       - toolkit
       - tests
+      - container
     steps:
       - name: Fail if any job did not succeed
         run: |
