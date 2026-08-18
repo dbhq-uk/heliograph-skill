@@ -1294,9 +1294,19 @@ assert_contains "and says plainly what that costs on a failed push" \
 make_pushfail_repo "$TMP/pushfail.git"
 F1_NAME="heliograph-wraptest-pushfail-$$"
 "$RUNTIME" rm -f "$F1_NAME" >/dev/null 2>&1
-f1_out="$(timeout 240 "$RUNTIME" run --name "$F1_NAME" \
-  -v "$TMP/pushfail.git:/srv/repo.git" \
-  -- "$IMAGE" "file:///srv/repo.git" -- --once 2>&1)"
+# THE COMMAND IS THE WRAPPER'S OWN, not a hand-written imitation of it: taken
+# from --print, with only the fixture's bind mount inserted before the `--`
+# that ends the runtime's flags. So a change to what heliograph.sh composes -
+# putting --rm back, say - genuinely changes what runs here, and this
+# assertion goes red with it rather than passing against a shape the wrapper
+# no longer produces. print_cmd %q-quotes every argument, which is what makes
+# the line safe to hand back to a shell.
+wrap --print --image "$IMAGE" --name "$F1_NAME" "file:///srv/repo.git" -- --once
+f1_cmd="$(composed_cmd "$OUT")"
+f1_cmd="${f1_cmd/ -- $IMAGE/ -v $TMP/pushfail.git:/srv/repo.git -- $IMAGE}"
+assert_contains "the fixture mount really was inserted into the wrapper's own command" \
+  "$TMP/pushfail.git:/srv/repo.git" "$f1_cmd"
+f1_out="$(timeout 240 bash -c "$f1_cmd" 2>&1)"
 assert_contains "the run really does reach cap_push's failed-push branch" \
   "PUSH FAILED" "$f1_out"
 assert_contains "and says the log is committed locally, inside this container" \
@@ -1400,7 +1410,7 @@ REPO_URL="https://example.invalid/env-repo-url.git" wrap --print --image "$IMAGE
 # the composed line is another flag, never an "=" - and paired with a direct
 # assertion that no "-e REPO_URL=" appears at all.
 assert_contains "REPO_URL already in the environment is forwarded by bare name too" \
-  "-e REPO_URL --name " "$OUT"
+  "-e REPO_URL " "$(composed_cmd "$OUT")"
 assert_eq "and never as -e REPO_URL=<value>, which would put the URL in this script's argv" "" \
   "$(printf '%s' "$OUT" | grep -o -- '-e REPO_URL=')"
 assert_eq "so its value is nowhere on the composed command line" "" \
