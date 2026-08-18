@@ -2,19 +2,38 @@
 #  Dockerfile - somewhere the loop can live that is not somebody's laptop
 # =============================================================================
 # This image supplies only what start.sh's own preflight refuses to run
-# without, plus git and sudo. It has NO ENTRYPOINT YET: PR 3 task 2 adds one
-# that clones a transport repo and hands over to that repo's own start.sh,
-# which bootstrap.sh copies into every transport repo and which already owns
-# the preflight, the credential resolution, the branch checkout and the
-# handover to agent.sh. Duplicating any of that here would leave no answer to
-# "which copy of the preflight is authoritative", so this file does not try.
+# without, plus git, openssh-client and sudo. It has NO ENTRYPOINT YET: PR 3
+# task 2 adds one that clones a transport repo and hands over to that
+# repo's own start.sh, which bootstrap.sh copies into every transport repo
+# and which already owns the preflight, the credential resolution, the
+# branch checkout and the handover to agent.sh. Duplicating any of that here
+# would leave no answer to "which copy of the preflight is authoritative",
+# so this file does not try.
 #
-# Measured, not guessed - see task-1-report.md for the full method:
-#   debian:bookworm-slim                                       28.2 MB
-#   + ca-certificates                                           3.5 MB
-#   + git (pulls in perl, libcurl3-gnutls and their libraries) +30.1 MB
-#   + sudo                                                      +1.0 MB
-#   finished image                                             ~62.9 MB
+# Measured, not guessed - see task-1-report.md for the full method and for
+# TWO DIFFERENT NUMBERS this daemon reports, which disagree by a wide
+# margin and are both honest:
+#   `docker image inspect --format '{{.Size}}'` (compressed layer size -
+#   close to what a `docker pull` actually transfers, confirmed by diffing
+#   against `docker save | gzip`):
+#     debian:bookworm-slim                                       28.2 MB
+#     + ca-certificates                                           3.5 MB
+#     + git (pulls in perl, libcurl3-gnutls and their libraries) +30.1 MB
+#     + openssh-client (pulls in libfido2, libcbor, krb5 libs)    +2.3 MB
+#     + sudo                                                      +1.0 MB
+#     finished image                                             ~65.2 MB
+#
+#   `docker images` / `docker system df -v` (unpacked, on-disk footprint
+#   under this daemon's containerd snapshotter - what the image actually
+#   occupies once built or pulled, no compression):
+#     debian:bookworm-slim                                        116 MB
+#     finished image                                               261 MB
+#
+# Which of these to quote depends entirely on the question being asked -
+# "what does a pull cost" or "what does this take up once it is here" - so
+# quote the one that answers the actual question and say which it is,
+# rather than picking whichever number is smaller.
+#
 # bash (5.2), GNU sed (4.9, so -u is honoured), GNU coreutils (9.1, so
 # base64 -w0 is genuinely unwrapped and not merely accepted), sha256sum, date
 # and setsid all ship with debian:bookworm-slim already. Nothing is installed
@@ -49,10 +68,30 @@ FROM debian:bookworm-slim
 # freezing this line.
 ENV DEBIAN_FRONTEND=noninteractive
 
+# openssh-client is here because references/transport.md's own stated
+# preference is SSH with a forwarded agent key ("nothing is stored on the
+# control node and the push needs no credentials of its own"), over HTTPS
+# with a token, which that document treats as the fallback. Shipping an
+# image with no `ssh` binary at all would silently take that preferred path
+# off the table and force every user onto the fallback - a capability gap
+# the documentation would then be wrong about.
+#
+# Including the binary does not make SSH auth WORK everywhere it is
+# present, and the next two things are true regardless of what task 2 or 3
+# decide:
+#   - SSH from inside this container needs an agent socket forwarded in
+#     (bind-mounting $SSH_AUTH_SOCK, typically), which is task 3's wrapper's
+#     job to offer, not this Dockerfile's;
+#   - PR 4's Azure Container Instances path has nobody to forward an agent
+#     FROM - there is no host session on the far side of an ACI deployment -
+#     so that path is token-based over HTTPS regardless of what ships here.
+# `openssh-client` only makes SSH possible where an agent exists to forward;
+# it does not make it universal.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
          ca-certificates \
          git \
+         openssh-client \
          sudo \
     && rm -rf /var/lib/apt/lists/*
 

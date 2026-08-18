@@ -112,11 +112,17 @@ assert_eq "sed -u is honoured" "y" "$out"
 out="$(run_in bash -c "printf '%080d' 1 | base64 -w0 | wc -l")"
 assert_eq "base64 -w0 output has no embedded newline" "0" "$out"
 
-# --- sha256sum, git and setsid are all present ----------------------------------
+# --- sha256sum, git, setsid and ssh are all present ------------------------------
 # start.sh treats a missing sha256sum and setsid as warnings, not failures -
 # but this image's job is to not make an operator read either warning, so
 # presence is asserted here regardless of what start.sh would tolerate.
-for tool in sha256sum git setsid; do
+#
+# ssh is here because references/transport.md's stated preference is SSH
+# with a forwarded agent key, over an HTTPS token, which it treats as the
+# fallback. An image with no ssh binary at all would make that preferred
+# path impossible rather than merely unconfigured, so presence is a
+# guarantee of this image, not just a nice-to-have.
+for tool in sha256sum git setsid ssh; do
   out="$(run_in bash -c "command -v $tool >/dev/null 2>&1 && echo present || echo absent")"
   assert_eq "$tool is present" "present" "$out"
 done
