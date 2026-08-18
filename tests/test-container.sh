@@ -251,7 +251,17 @@ assert_contains "confirmed by hand: an embedded credential DOES reach .git/confi
 # the real url and handed the credentialed one to start.sh untouched, whose
 # own arg parser echoes an unrecognised option verbatim - the token reaching
 # stdout in full. Refusing outright, before either value is used, closes it.
-run_entry -e "REPO_URL=file:///srv/does-not-need-to-exist-for-this-check.git" \
+#
+# REPO_URL points at a REAL, clonable bare repo here - deliberately, not a
+# nonexistent path. A bogus REPO_URL would make the clone itself fail first,
+# so the credentialed positional argument would never even reach the
+# passthrough this finding is about, and "the token never reaches output"
+# would pass for the wrong reason (the clone failing) rather than the right
+# one (the ambiguity being refused before any clone is attempted). Confirmed
+# by mutation: with a bogus REPO_URL, bypassing the refusal still left that
+# assertion green; with a real one, it goes red exactly as expected.
+make_transport_repo "$TMP/repourl-ambiguity.git"
+run_entry -e "REPO_URL=file:///srv/repo.git" -v "$TMP/repourl-ambiguity.git:/srv/repo.git" \
   "$IMAGE" "https://ci-user:$TOKEN@example.invalid/x.git"
 assert_eq "REPO_URL plus a positional argument is refused rather than one silently winning" \
   "2" "$RC"
