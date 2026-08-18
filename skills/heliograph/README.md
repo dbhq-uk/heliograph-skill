@@ -43,8 +43,9 @@ failed run reads as clearly as a successful one and no round trip is wasted.
 | [`references/transport.md`](references/transport.md) | how the control node authenticates to the git host |
 | [`references/remote-repo.md`](references/remote-repo.md) | changing a repo that is also on the far side |
 | [`references/secrets.md`](references/secrets.md) | `secret.sh`, for a value that has to reach the far side |
+| [`references/container.md`](references/container.md) | running the control node in a container: what ships, why, and the honest limits |
 | [`scripts/bootstrap.sh`](scripts/bootstrap.sh) | installs the toolkit into a transport repo |
-| [`toolkit/`](toolkit/) | the payload: `start.sh`, `run.sh`, `agent.sh`, `caprun.sh`, `caplib.sh`, `secret.sh`, `lib/`, `steps/` |
+| [`toolkit/`](toolkit/) | the payload: `start.sh`, `run.sh`, `agent.sh`, `caprun.sh`, `caplib.sh`, `secret.sh`, `lib/`, `steps/`, `docker/` |
 
 Nothing in `toolkit/` runs from here. It is copied out and runs on a machine you
 will never see, in front of someone who cannot debug it. Edit it accordingly.
