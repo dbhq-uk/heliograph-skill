@@ -139,7 +139,6 @@ RUN useradd --create-home --uid "${HELIOGRAPH_UID}" --shell /bin/bash heliograph
     && chmod 0440 /etc/sudoers.d/heliograph \
     && visudo -cf /etc/sudoers.d/heliograph
 
-
 # --- the entrypoint --------------------------------------------------------------
 # Copied and made executable while still root, so it works regardless of
 # whatever mode the file carried when it entered the build context (git
