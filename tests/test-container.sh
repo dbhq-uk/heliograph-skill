@@ -442,8 +442,18 @@ else
     "this container runs as uid $MISMATCH_UID" "$OUT"
   # NOT SWALLOWED. git's own stderr was discarded before this fix, which is
   # what left the entrypoint with nothing to diagnose from.
-  assert_contains "git's own error reaches the operator rather than being discarded" \
-    "dubious ownership" "$OUT"
+  #
+  # This asserted on the substring "dubious ownership" at first, and that
+  # assertion COULD NOT FAIL: entrypoint.sh's own prose above it contains the
+  # phrase too ("git refuses to read a repository owned by another user
+  # (CVE-2022-24765, \"dubious ownership\")"), so the subject was reachable by
+  # two paths and the hardcoded one always satisfied it. Found by mutation -
+  # restoring `2>/dev/null` left it green. Anchored now on the "git said:"
+  # label, which is printed ONLY when stderr was genuinely captured, and on
+  # git's own wording, which appears nowhere in this script's prose.
+  assert_contains "git's own error is quoted rather than discarded" "git said:" "$OUT"
+  assert_contains "and it really is git's own wording, not this script's paraphrase of it" \
+    "detected dubious ownership in repository at" "$OUT"
   # The claim the old message made, which was false: this directory IS a clone
   # of the URL this run was given.
   assert_eq "it never claims the directory holds some other repository" "" \
@@ -491,6 +501,30 @@ run_entry -v "$TMP/foreign:/home/heliograph/repo" "$IMAGE" "https://example.inva
 assert_eq "a foreign non-empty directory blocks rather than being cloned into" "1" "$RC"
 assert_contains "and says why" "not a heliograph checkout" "$OUT"
 assert_eq "and it is left untouched" "not a git repo" "$(cat "$TMP/foreign/unrelated-file.txt")"
+# With no .git at all, "empty it by hand" is safe advice and stays: there is
+# nothing here that could be a repository holding an unpushed commit.
+assert_contains "with no .git, emptying it by hand is still offered - nothing here can be a repo" \
+  "empty the" "$OUT"
+
+# The SAME branch with a .git present: the one other place this script
+# reached for "empty the directory by hand". A checkout whose ./start.sh
+# merely lost its executable bit lands here, and it can be a real transport
+# repo holding commits that were never pushed - so this branch does not say
+# that either. Same rule as the unidentified paths above, different branch.
+mkdir -p "$TMP/noexec"
+( cd "$TMP/noexec" && git init -q \
+    && printf '#!/usr/bin/env bash\necho NOEXEC\n' > start.sh && chmod -x start.sh \
+    && $GIT add -A && $GIT commit -qm init ) >/dev/null 2>&1
+run_entry -v "$TMP/noexec:/home/heliograph/repo" "$IMAGE" "https://example.invalid/x.git"
+assert_eq "a git repo whose start.sh is not executable blocks too" "1" "$RC"
+assert_contains "naming that it IS a repository, so its contents are not disposable" \
+  "It has a .git, so it IS a git repository" "$OUT"
+assert_eq "and here 'empty it by hand' is NOT offered - it could hold an unpushed commit" "" \
+  "$(printf '%s' "$OUT" | grep -o 'empty the directory by hand')"
+assert_contains "it names the likely cause and a fix that keeps the repo instead" \
+  "chmod +x it" "$OUT"
+assert_eq "and the repository is still there afterwards" "yes" \
+  "$([ -d "$TMP/noexec/.git" ] && echo yes || echo no)"
 
 # --- the credential never ends up in the cloned repo's .git/config -------------
 make_transport_repo "$TMP/config.git"
@@ -1037,9 +1071,12 @@ assert_contains "REPO_URL already in the environment is forwarded by bare name t
 # else entirely inside the container - confirmed directly: `stat -c '%U %u'`
 # on a bind-mounted, host-owned directory read "root 0" from inside a
 # rootless podman container running as heliograph (uid 1000), and git's own
-# dubious-ownership refusal (CVE-2022-24765) then silently broke the
-# --volume reuse path (entrypoint.sh's own `git remote get-url origin`
-# discards stderr). The identical scenario needs nothing extra under Docker,
+# dubious-ownership refusal (CVE-2022-24765) then broke the --volume reuse
+# path - silently at the time, because entrypoint.sh's own `git remote
+# get-url origin` discarded stderr and reported the failure as a clone of a
+# different repository. That misdiagnosis is fixed and asserted separately
+# further up this file; this flag is what stops the mismatch arising at all
+# under podman. The identical scenario needs nothing extra under Docker,
 # which does not remap uids by default. Skipped loudly, the same way the
 # whole file skips when no runtime at all is reachable, if podman
 # specifically is not present here.

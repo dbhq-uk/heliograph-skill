@@ -112,14 +112,27 @@
 #  and a real key, and proved BROKEN when the uid does not match - see the
 #  task report for both transcripts.
 #
-#  A LIMIT THIS FILE DOES NOT FULLY SOLVE: --volume has the identical
+#  A LIMIT THIS FILE DIAGNOSES RATHER THAN SOLVES: --volume has the identical
 #  ownership problem (the container's uid needs write access to whatever
 #  host directory is given), and --ssh's own image-rebuilding uid-matching
-#  machinery is not extended to it - --ssh's requirement was stated as
-#  not-optional; --volume's was not, and solving it automatically would mean
-#  guessing which of two possibly-different uids (the volume directory's
-#  owner, the ssh socket's owner) a combined `--volume --ssh` run should
-#  build for. Under PODMAN specifically, --userns=keep-id (above) happens to
+#  machinery is deliberately NOT extended to it. Three reasons, weighed
+#  again when the whole-PR review found that a --volume uid mismatch was
+#  being MISDIAGNOSED (as a clone of a different repository, with advice to
+#  empty the directory), which is the part that actually needed fixing:
+#    - a combined `--volume --ssh` run has two possibly-different uids (the
+#      volume directory's owner, the ssh socket's owner) and no principled
+#      way to choose between them;
+#    - the two failures are not the same shape. An ssh-agent socket is mode
+#      0600, so a uid mismatch makes --ssh impossible outright; a --volume
+#      directory is usually 0755, and what is actually needed is WRITE
+#      access, which many host directories already grant;
+#    - auto-matching would silently pick the container's user identity from
+#      whatever happens to own a path an operator pointed at, which is a
+#      surprise worth avoiding on a system-owned directory.
+#  What was missing was never the automation - it was a correct diagnosis.
+#  entrypoint.sh now names an ownership mismatch as one, with the uid on
+#  each side and the exact --build-arg line for the uid that owns the
+#  directory. Under PODMAN specifically, --userns=keep-id (above) happens to
 #  cover the common case anyway - a --volume directory owned by the person
 #  who actually ran this script, which is by far the usual shape - because
 #  it maps the container's uid to that same invoking user, not to an
@@ -166,7 +179,10 @@ refusal (a credential embedded in the URL, REPO_URL and a positional URL
 together) is entrypoint.sh's job (task 2), unchanged.
 
 Wrapper options (must come first; use -- to separate them from a start.sh
-argument that itself begins with a dash, e.g. --branch with REPO_URL set):
+argument that itself begins with a dash, e.g. --branch with REPO_URL set).
+Every option below that takes a value refuses a value that is missing, or
+that begins with a dash: `--image --help` would otherwise reach the runtime
+as one of ITS flags and exit 0 having run nothing at all.
   --runtime docker|podman   force a runtime instead of auto-detecting
   --image TAG               image tag to run or build (default heliograph-toolkit:local)
   --dockerfile PATH         Dockerfile to build from (default: alongside this script)
@@ -434,9 +450,13 @@ declare -a RUN_ARGS=(run)
 # something else entirely from inside the container. Confirmed by hand: a
 # host directory owned by the invoking user showed as "root 0" inside a
 # rootless podman container running as heliograph, and git's own dubious-
-# ownership check (CVE-2022-24765) then refused it outright - silently, from
-# this script's point of view, because entrypoint.sh's `git remote get-url
-# origin` (task 2) discards stderr. The identical scenario under Docker
+# ownership check (CVE-2022-24765) then refused it outright - silently at the
+# time, because entrypoint.sh's `git remote get-url origin` discarded stderr
+# and rendered the failure as a clone of a different repository. That half is
+# fixed in entrypoint.sh (see its three-outcomes comment): an ownership
+# mismatch now names itself, with the uid on each side, and never suggests
+# emptying the checkout. This flag is what stops the mismatch arising at all
+# under podman, which is still worth having. The identical scenario under Docker
 # needs none of this: Docker does not remap uids by default, so container
 # uid 1000 already IS host uid 1000. `--userns=keep-id` is podman's own,
 # documented fix - it maps the CURRENT rootless user's uid to the SAME uid

@@ -246,8 +246,13 @@ usage: entrypoint.sh <repo-url> [start.sh args...]
 
 Clones <repo-url> into ${HELIOGRAPH_WORKDIR:-$HOME/repo} - or reuses it
 unchanged if a persistent volume already holds a clone of the SAME repo
-there from an earlier run of this container (a clone of a DIFFERENT repo is
-refused, not silently reused) - then hands over to that repo's own
+there from an earlier run of this container. A clone of a DIFFERENT repo is
+refused, not silently reused; so is a directory whose origin remote cannot
+be READ at all, which is a different fact and gets a different message (the
+usual cause is a checkout owned by a different uid than this container's
+user, which git refuses to read). Nothing is ever emptied or deleted to get
+past either, and no message suggests it for a directory whose contents this
+script could not identify. Then it hands over to that repo's own
 ./start.sh, which owns the preflight, the credential checks, the branch
 checkout and the handover to agent.sh. Every argument after the URL (or
 every argument at all, if REPO_URL is set with no positional URL) is passed
@@ -461,8 +466,24 @@ EGITERR
     # directory); silently deleting it first would be the wrong failure mode
     # to invent when the safe one - stop and say why - is right there.
     echo "entrypoint: $WORKDIR exists, is not empty, and is not a heliograph checkout" >&2
-    echo "  (missing .git or start.sh). Refusing to clone over it or delete it -" >&2
-    echo "  empty the directory by hand first, or set HELIOGRAPH_WORKDIR to somewhere else." >&2
+    echo "  (missing .git or start.sh). Refusing to clone over it or delete it." >&2
+    if [ -e "$WORKDIR/.git" ]; then
+      # THE SAME RULE as the unidentified paths above, applied to the one
+      # other branch that reaches for "empty it by hand". A .git here means
+      # this IS a git repository - just not one with a start.sh to hand over
+      # to - and this branch has read nothing about what it contains. It may
+      # be a transport repo whose start.sh merely lost its executable bit,
+      # holding commits that were never pushed. Telling an operator to empty
+      # that is the same mistake in a different branch, so this one does not.
+      echo "  It has a .git, so it IS a git repository, and this run has read nothing" >&2
+      echo "  about what it holds - it may carry commits that were never pushed. Do not" >&2
+      echo "  empty it to get past this. If it is a transport repo whose ./start.sh lost" >&2
+      echo "  its executable bit, chmod +x it; otherwise point HELIOGRAPH_WORKDIR at a" >&2
+      echo "  different, empty location for this run." >&2
+    else
+      echo "  There is no .git here, so this is not a checkout of anything: empty the" >&2
+      echo "  directory by hand first, or set HELIOGRAPH_WORKDIR to somewhere else." >&2
+    fi
     exit 1
   else
     echo "entrypoint: cloning $(printf '%s' "$url" | mask_secrets) into $WORKDIR"

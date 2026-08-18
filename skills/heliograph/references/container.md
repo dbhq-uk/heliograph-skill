@@ -204,6 +204,38 @@ and push captured logs to, the wrong transport repo - precisely the failure
 this toolkit exists to prevent, so it is a refusal rather than a warning that
 scrollback might miss.
 
+**That check has three outcomes, and they are three different facts.** The
+read succeeds and the URL matches, so the checkout is reused; the read
+succeeds and the URL *differs*, so this is a genuinely different repository;
+or the read *fails*, in which case the entrypoint knows nothing at all about
+what the directory holds. All three refuse-or-reuse correctly, but only the
+middle one may be described as "a clone of something else". The third is
+reported as **unidentified**, with `git`'s own error quoted rather than
+discarded.
+
+The commonest cause of the third is an **ownership mismatch**: `git` refuses
+to read a repository owned by a different uid than the process reading it
+(CVE-2022-24765, "dubious ownership"), which is exactly what a `--volume`
+checkout owned by someone other than the container's `heliograph` user
+produces. That case names itself as one, with the uid on each side, measured
+from both the working tree and the `.git` directory because `git` refuses on
+either. It explicitly does *not* claim the directory is a clone of some other
+repository, because the failure that produced it is precisely the failure to
+find that out.
+
+**No message on a path that could not identify a directory ever suggests
+emptying or deleting it.** That directory is the operator's own checkout and
+may hold a captured log that was committed but never pushed - under
+constraint 2 ("a failed run still ships, and a failed push never loses a
+log"), that is the only copy of the evidence the toolkit exists to carry off
+a machine nobody can reach. The unidentified paths say so explicitly and
+offer remedies that keep the checkout: rebuild the image for the owning uid
+(`--build-arg HELIOGRAPH_UID=`), `chown` the host directory to the
+container's uid, or use rootless podman's `--userns=keep-id`, which the
+wrapper already adds for you. Only the identified different-repository case
+mentions emptying the directory at all, and it says to check for unpushed
+work first.
+
 A directory that is non-empty but not a recognisable checkout (no `.git`, or
 no `start.sh`) is also refused, never deleted or cloned over - `git` would
 refuse a non-empty target anyway, and inventing a "clear it first" behaviour
@@ -307,26 +339,42 @@ under.
 
 **Rootless podman needs one more thing: `--userns=keep-id`.** Rootless
 podman's default user namespace remaps every non-root container uid to an
-unrelated host uid, which silently breaks both `--ssh`'s uid-matching and
-`--volume`'s reuse path - a host directory genuinely owned by the invoking
-user shows up owned by something else entirely from inside the container,
-and `git`'s own dubious-ownership refusal then blocks the checkout, silently
-from the wrapper's point of view. `--userns=keep-id` is podman's own
-documented fix, and the wrapper adds it whenever the runtime is podman,
-never offered to Docker, which has no such flag and does not need one -
-Docker does not remap uids by default.
+unrelated host uid, which breaks both `--ssh`'s uid-matching and `--volume`'s
+reuse path - a host directory genuinely owned by the invoking user shows up
+owned by something else entirely from inside the container, and `git`'s own
+dubious-ownership refusal then blocks the checkout. `--userns=keep-id` is
+podman's own documented fix, and the wrapper adds it whenever the runtime is
+podman, never offered to Docker, which has no such flag and does not need
+one - Docker does not remap uids by default.
 
 **A limit this does not fully solve:** `--volume` has the identical ownership
-problem, and `--ssh`'s uid-rebuilding machinery is not extended to it - the
-wrapper cannot know which of two possibly different uids (the volume
-directory's owner, the socket's owner) a combined `--volume --ssh` run should
-build for, and does not guess. Under podman, `--userns=keep-id` happens to
-cover the common `--volume` case anyway, because it maps the container's uid
-to the invoking user's own, not to an arbitrarily chosen target the way
-`--ssh`'s build-arg does. It does nothing for a directory owned by a third
-uid, and nothing at all under Docker. In either remaining case: build for the
-uid that matters by hand (`--image` naming your own tag, `docker build
---build-arg HELIOGRAPH_UID=...`), or chown the host directory once.
+problem, and `--ssh`'s uid-rebuilding machinery is not extended to it. It is
+**diagnosed rather than solved**, deliberately, and the entrypoint's
+unidentified-checkout message above is where that diagnosis lands: it names
+the uid on each side and gives the exact `--build-arg HELIOGRAPH_UID=` line
+for the uid that actually owns the directory. Three reasons not to automate
+it further:
+
+- A combined `--volume --ssh` run has two possibly different uids (the
+  volume directory's owner, the socket's owner) and no principled way to
+  choose between them. The wrapper does not guess.
+- The two failures are not the same shape. An `ssh-agent` socket is mode
+  `0600`, so a uid mismatch makes `--ssh` impossible, full stop; a `--volume`
+  directory is usually mode `0755`, and what is actually needed is *write*
+  access, which many host directories already grant to the container's uid.
+- Auto-matching would silently choose which uid the container runs as from
+  whatever happens to own a directory an operator pointed at. Selecting the
+  container's user identity from an incidental property of a path is a
+  surprise worth avoiding, especially for a system-owned directory.
+
+Under podman, `--userns=keep-id` happens to cover the common `--volume` case
+anyway, because it maps the container's uid to the invoking user's own rather
+than to an arbitrarily chosen target the way `--ssh`'s build-arg does. It
+does nothing for a directory owned by a third uid, and nothing at all under
+Docker. In either remaining case the refusal now says exactly what to do:
+build for the uid that matters by hand (`--image` naming your own tag,
+`docker build --build-arg HELIOGRAPH_UID=...`), or chown the host directory
+once.
 
 ## What none of this covers
 
