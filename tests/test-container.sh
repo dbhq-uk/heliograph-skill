@@ -595,6 +595,115 @@ assert_contains "and it is entrypoint.sh's own message, not a wrapper rewrite of
   "no repository URL" "$OUT"
 
 # =============================================================================
+#  wrapper option validation - PR 3 review, Findings 1 and 2, and a Minor
+# =============================================================================
+# Three of this wrapper's own flags take a value that gets composed into a
+# specific shape (a bind mount's host side, an image reference, a Dockerfile
+# path) rather than passed through opaque - so a value that does not fit is
+# caught HERE, named as this wrapper's own flag, instead of reaching
+# docker/podman and surfacing as THEIR generic complaint ("invalid mode",
+# "invalid reference format"), which names neither the flag nor the value at
+# fault. None of this reaches into entrypoint.sh's own territory (the URL,
+# any start.sh argument) - only this wrapper's own options, per this file's
+# standing rule.
+
+# --- --volume rejects a host:target pair (Finding 1) ---------------------------
+# --volume is documented as taking a HOST DIRECTORY only - the container-side
+# target is fixed by this script (WORKDIR_CONTAINER), never chosen by the
+# caller. Before this fix, a host:target pair composed straight into
+# "-v host:target:/home/heliograph/repo" (a three-field mount), and
+# docker/podman's own "invalid mode: /home/heliograph/repo" surfaced instead -
+# naming neither --volume nor the value at fault. Confirmed by hand before
+# this fix existed; see the task report.
+wrap --volume /tmp/does-not-matter:/tmp/also-does-not-matter "https://example.invalid/x.git"
+assert_eq "--volume with a host:target pair is refused before any mount is composed" "2" "$RC"
+assert_contains "and it names the flag and what it actually takes" \
+  "--volume takes a single host directory, not a host:target pair" "$OUT"
+
+# --- --image rejects a malformed reference (Finding 2) -------------------------
+# Uppercase is the shape an operator actually mistypes - docker/podman
+# repository names are lowercase-only. A bare non-empty check let this reach
+# "$RUNTIME build"/"run" and come back as their own "invalid reference
+# format", naming nothing about which flag caused it.
+wrap --image "MyImage:Latest" "https://example.invalid/x.git"
+assert_eq "--image with uppercase is refused before it ever reaches the runtime" "2" "$RC"
+assert_contains "and it names the flag and the expected shape" \
+  "does not look like a valid image reference" "$OUT"
+
+# A value that is otherwise well-formed - lowercase, built only from the
+# characters a real reference uses, including a registry host:port and a
+# multi-segment path - is NOT rejected, so this stays a narrow typo-catcher
+# rather than a parser that could reject something valid.
+wrap --print --image "registry.example.invalid:5000/my-team/heliograph:v1.2.3" "https://example.invalid/x.git"
+assert_eq "a well-formed multi-segment reference with a registry port is accepted" "0" "$RC"
+
+# --- --dockerfile rejects a path that does not exist (Minor) -------------------
+# Previously reached ensure_image unchecked, so a typo'd path failed only
+# after a wasted build attempt, in docker's own voice. Caught at parse time,
+# the same way --token-file's existing existence check works.
+wrap --dockerfile /no/such/Dockerfile-anywhere "https://example.invalid/x.git"
+assert_eq "--dockerfile naming a path that does not exist is refused immediately" "1" "$RC"
+assert_contains "and it names the flag and the missing path" \
+  "--dockerfile /no/such/Dockerfile-anywhere does not exist" "$OUT"
+
+# =============================================================================
+#  the runtime-reachability guard (detect_runtime) - PR 3 review, Finding 3
+# =============================================================================
+# detect_runtime distinguishes "the binary is on PATH" from "its daemon/store
+# actually answers info" - two DIFFERENT checks (command -v, then a real
+# invocation), each with its own refusal and its own message. Every
+# assertion above this point that reaches detect_runtime at all does so
+# against a real docker or podman that is genuinely reachable on THIS
+# machine, so none of them exercises the "on PATH but not reachable"
+# branches - a guard disabled entirely still leaves every one of them green
+# here, which is exactly how this hole shipped uncaught. A fake runtime
+# script, put on PATH, whose own "info" subcommand fails deliberately, is
+# the only way to make "on PATH" and "reachable" come apart under test,
+# regardless of what is actually installed on the machine running this file.
+mkdir -p "$TMP/fakeruntime"
+cat > "$TMP/fakeruntime/heliograph-fake-runtime" <<'EOF'
+#!/bin/sh
+# On PATH (this directory is on it), but 'info' always fails - proving the
+# guard checks more than command -v alone.
+[ "$1" = "info" ] && exit 1
+exit 0
+EOF
+chmod +x "$TMP/fakeruntime/heliograph-fake-runtime"
+
+# --- --runtime naming something not on PATH at all ------------------------------
+wrap --runtime heliograph-runtime-does-not-exist-anywhere "https://example.invalid/x.git"
+assert_eq "--runtime naming a binary that is not on PATH refuses" "1" "$RC"
+assert_contains "and it names the runtime and says so" \
+  "--runtime heliograph-runtime-does-not-exist-anywhere was given but it is not on PATH" "$OUT"
+
+# --- --runtime naming something ON PATH whose 'info' does not answer -----------
+# The property this finding is about: a real, executable binary, genuinely on
+# PATH (so command -v alone would accept it), that is not actually a usable
+# container runtime. PATH is PREPENDED, not replaced - GIT_TOKEN="$X" wrap ...
+# above already established that a variable assignment ahead of a function
+# call applies only for that one call - so bash/timeout/coreutils, everything
+# heliograph.sh and wrap() itself need, are still found afterward.
+PATH="$TMP/fakeruntime:$PATH" wrap --runtime heliograph-fake-runtime "https://example.invalid/x.git"
+assert_eq "a runtime that is on PATH but whose 'info' fails still refuses" "1" "$RC"
+assert_contains "and the message distinguishes PATH presence from actual reachability" \
+  "heliograph-fake-runtime is on PATH but 'info' did not answer" "$OUT"
+
+# --- the same distinction in the auto-detect loop, not just --runtime ----------
+# detect_runtime's un-forced path is a SEPARATE loop over docker/podman, not
+# the lines the two assertions above exercise. Shadowing BOTH names with the
+# identical broken fake proves that loop also checks reachability, not just
+# presence - real docker/podman being installed elsewhere cannot rescue it,
+# because the two names it actually looks for resolve to the broken fakes
+# first.
+mkdir -p "$TMP/fakebin-norun"
+cp "$TMP/fakeruntime/heliograph-fake-runtime" "$TMP/fakebin-norun/docker"
+cp "$TMP/fakeruntime/heliograph-fake-runtime" "$TMP/fakebin-norun/podman"
+PATH="$TMP/fakebin-norun:$PATH" wrap "https://example.invalid/x.git"
+assert_eq "auto-detect with both candidate names present but unreachable still refuses" "1" "$RC"
+assert_contains "naming both candidates it checked and that neither answered" \
+  "no container runtime is reachable (checked: docker, podman" "$OUT"
+
+# =============================================================================
 #  decision 1: build the image if it is absent
 # =============================================================================
 # A tag distinct from $IMAGE, so these assertions genuinely start from "the

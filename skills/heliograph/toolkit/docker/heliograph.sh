@@ -227,10 +227,30 @@ while [ $# -gt 0 ]; do
     --image)
       IMAGE="${2:-}"
       [ -z "$IMAGE" ] && { echo "--image requires a tag" >&2; exit 2; }
+      # Not a full OCI reference parser (registry/repo/tag/digest grammar is
+      # more than this wrapper needs to own) - just the shapes an operator
+      # actually mistypes: whitespace, and anything outside the character set
+      # a reference is ever built from (which also catches uppercase, since
+      # docker/podman repository names are lowercase-only). Left through
+      # uncaught: colon count, segment ordering, tag length - those reach
+      # "$RUNTIME build"/"run" and come back as their own "invalid reference
+      # format", which at least is docker/podman's real, current wording
+      # rather than a guess this wrapper would need to keep in sync.
+      case "$IMAGE" in
+        *[!a-z0-9._/:@-]*)
+          echo "heliograph.sh: --image '$IMAGE' does not look like a valid image reference." >&2
+          echo "  Expected lowercase letters, digits, and . _ / : @ - only (docker/podman" >&2
+          echo "  reject uppercase, and any other character, as 'invalid reference format')." >&2
+          exit 2 ;;
+      esac
       shift ;;
     --dockerfile)
       DOCKERFILE="${2:-}"
       [ -z "$DOCKERFILE" ] && { echo "--dockerfile requires a path" >&2; exit 2; }
+      if [ ! -e "$DOCKERFILE" ]; then
+        echo "heliograph.sh: --dockerfile $DOCKERFILE does not exist." >&2
+        exit 1
+      fi
       shift ;;
     --build) BUILD_MODE="force" ;;
     --no-build) BUILD_MODE="refuse" ;;
@@ -242,6 +262,20 @@ while [ $# -gt 0 ]; do
     --volume)
       VOLUME_HOST="${2:-}"
       [ -z "$VOLUME_HOST" ] && { echo "--volume requires a host directory" >&2; exit 2; }
+      # --volume takes ONE host path, never a host:target pair - the target is
+      # fixed by this script (WORKDIR_CONTAINER, above), never chosen by the
+      # caller. Without this, "host:target" is composed straight into
+      # "-v host:target:$WORKDIR_CONTAINER" (a THREE-field mount), and
+      # docker/podman refuse it with "invalid mode: <target>" - naming
+      # neither --volume nor the value the operator actually gave.
+      case "$VOLUME_HOST" in
+        *:*)
+          echo "heliograph.sh: --volume takes a single host directory, not a host:target pair -" >&2
+          echo "  got '$VOLUME_HOST'. This flag always mounts onto the container's own working" >&2
+          echo "  directory, which this script chooses; pass just the host-side path, e.g." >&2
+          echo "  --volume /path/on/host" >&2
+          exit 2 ;;
+      esac
       shift ;;
     --token-file)
       TOKEN_FILE="${2:-}"
