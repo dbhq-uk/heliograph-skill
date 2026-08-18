@@ -871,5 +871,12 @@ else
 fi
 
 "$RUNTIME" image rm -f "$IMAGE-uid$(id -u)" >/dev/null 2>&1
+# The podman --userns=keep-id section above builds its own uid-tagged image
+# directly through the wrapper with --runtime podman, independent of
+# whichever runtime this file's own $RUNTIME auto-detected (docker, if both
+# are present) - so it needs its own cleanup line, not just the one above.
+if command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1; then
+  podman image rm -f "$IMAGE-uid$(id -u)" >/dev/null 2>&1
+fi
 
 t_summary
