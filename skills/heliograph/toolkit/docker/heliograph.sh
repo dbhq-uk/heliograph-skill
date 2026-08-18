@@ -112,15 +112,22 @@
 #  and a real key, and proved BROKEN when the uid does not match - see the
 #  task report for both transcripts.
 #
-#  A LIMIT THIS FILE DOES NOT SOLVE: --volume has the identical ownership
-#  problem (uid 1000 needs write access to whatever host directory is given)
-#  and this file does not extend the uid-matching machinery to it. --ssh's
-#  requirement was stated as not-optional; --volume's was not, and solving it
-#  automatically would mean guessing which of two possibly-different uids
-#  (the volume directory's owner, the ssh socket's owner) a combined
-#  `--volume --ssh` run should build for. An operator who needs both: build
-#  for the uid that matters with `--image` naming a tag of their own and
-#  `docker build --build-arg HELIOGRAPH_UID=...` by hand, or chown the host
+#  A LIMIT THIS FILE DOES NOT FULLY SOLVE: --volume has the identical
+#  ownership problem (the container's uid needs write access to whatever
+#  host directory is given), and --ssh's own image-rebuilding uid-matching
+#  machinery is not extended to it - --ssh's requirement was stated as
+#  not-optional; --volume's was not, and solving it automatically would mean
+#  guessing which of two possibly-different uids (the volume directory's
+#  owner, the ssh socket's owner) a combined `--volume --ssh` run should
+#  build for. Under PODMAN specifically, --userns=keep-id (above) happens to
+#  cover the common case anyway - a --volume directory owned by the person
+#  who actually ran this script, which is by far the usual shape - because
+#  it maps the container's uid to that same invoking user, not to an
+#  arbitrary chosen target the way --ssh's build-arg does. It does nothing
+#  for a directory owned by a THIRD uid, and nothing at all under Docker,
+#  which has no such flag. An operator in either remaining case: build for
+#  the uid that matters with `--image` naming a tag of their own and `docker
+#  build --build-arg HELIOGRAPH_UID=...` by hand, or chown the host
 #  directory once. Documented here rather than silently unsolved.
 # =============================================================================
 set -uo pipefail
