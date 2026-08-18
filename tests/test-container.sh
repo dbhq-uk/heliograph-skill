@@ -757,6 +757,48 @@ REPO_URL="https://example.invalid/env-repo-url.git" wrap --print --image "$IMAGE
 assert_contains "REPO_URL already in the environment is forwarded by bare name too" "-e REPO_URL" "$OUT"
 
 # =============================================================================
+#  podman: --userns=keep-id, found in this task's own testing
+# =============================================================================
+# Not in the brief - found by hand while proving --volume/--ssh work under
+# both runtimes. Rootless podman's DEFAULT user namespace remaps every non-
+# root container uid to an unrelated host uid, so a bind-mounted file
+# genuinely owned by the invoking host user showed up owned by something
+# else entirely inside the container - confirmed directly: `stat -c '%U %u'`
+# on a bind-mounted, host-owned directory read "root 0" from inside a
+# rootless podman container running as heliograph (uid 1000), and git's own
+# dubious-ownership refusal (CVE-2022-24765) then silently broke the
+# --volume reuse path (entrypoint.sh's own `git remote get-url origin`
+# discards stderr). The identical scenario needs nothing extra under Docker,
+# which does not remap uids by default. Skipped loudly, the same way the
+# whole file skips when no runtime at all is reachable, if podman
+# specifically is not present here.
+if ! command -v podman >/dev/null 2>&1 || ! podman info >/dev/null 2>&1; then
+  printf 'skip podman --userns=keep-id tests: podman is not reachable on this machine\n'
+else
+  wrap --print --runtime podman --image "$IMAGE" "https://example.invalid/x.git"
+  assert_contains "podman gets --userns=keep-id, so a bind-mounted file's ownership survives" \
+    "--userns=keep-id" "$OUT"
+
+  wrap --print --runtime docker --image "$IMAGE" "https://example.invalid/x.git"
+  assert_eq "docker is never given it - it has no such flag and does not need one" "" \
+    "$(printf '%s' "$OUT" | grep -o -- '--userns=keep-id')"
+
+  # Positive, end to end, under a REAL rootless podman container - not
+  # merely the flag being present. A host directory genuinely owned by the
+  # invoking user, reused through decision 3's own already-tested code path.
+  mkdir -p "$TMP/podmanvol"
+  ( cd "$TMP/podmanvol" && git init -q -b main \
+      && printf '#!/usr/bin/env bash\necho REUSE-OK\n' > start.sh && chmod +x start.sh \
+      && $GIT add -A && $GIT commit -qm init \
+      && git remote add origin "file:///srv/repo.git" ) >/dev/null 2>&1
+  wrap --runtime podman --image "$IMAGE" --dockerfile "$DOCKERFILE" --volume "$TMP/podmanvol" \
+    "file:///srv/repo.git"
+  assert_eq "the reuse path genuinely succeeds under a real rootless podman container" "0" "$RC"
+  assert_contains "recognising the checkout, rather than a silent dubious-ownership refusal" \
+    "already holds a clone" "$OUT"
+fi
+
+# =============================================================================
 #  SSH forwarding - not optional, and the ownership problem
 # =============================================================================
 if ! command -v ssh-agent >/dev/null 2>&1 || ! command -v ssh-keygen >/dev/null 2>&1; then

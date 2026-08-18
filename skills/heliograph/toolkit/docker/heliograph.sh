@@ -20,6 +20,18 @@
 #  docker. Confirmed by hand against a real podman 4.9.3 (rootless) install,
 #  not assumed - see the task report for exactly what was run.
 #
+#  ONE PODMAN-ONLY FLAG IS ADDED, deliberately, never offered to Docker:
+#  `--userns=keep-id`, only when $RUNTIME is podman (see the RUN_ARGS
+#  assembly below). Rootless podman remaps every non-root container uid to
+#  an unrelated host uid by default, which silently broke both --volume and
+#  --ssh's own uid-matching in testing - a bind-mounted file genuinely owned
+#  by the invoking host user showed up owned by something else entirely
+#  inside the container. This is not "a Docker-only flag" in the sense the
+#  brief warns against: it is the reverse, a flag Docker has no equivalent
+#  of and does not need, added only on the runtime that needs it, so the
+#  single command line an operator is given still works unchanged either
+#  way.
+#
 #  FOUR DECISIONS THIS FILE MAKES, each with its reasoning kept next to the
 #  code that implements it rather than only here:
 #
@@ -318,6 +330,29 @@ ensure_image() {
 FINAL_IMAGE="$IMAGE"
 declare -a BUILD_ARGS=()
 declare -a RUN_ARGS=(run)
+
+# Rootless podman's DEFAULT user namespace remaps every non-root container
+# uid to an unrelated subordinate host uid (/etc/subuid) - so the
+# `heliograph` user (uid 1000, or whatever --ssh's build-arg set it to)
+# never actually corresponds to a real host identity, and a bind-mounted
+# file or directory owned by the ACTUAL host user shows up owned by
+# something else entirely from inside the container. Confirmed by hand: a
+# host directory owned by the invoking user showed as "root 0" inside a
+# rootless podman container running as heliograph, and git's own dubious-
+# ownership check (CVE-2022-24765) then refused it outright - silently, from
+# this script's point of view, because entrypoint.sh's `git remote get-url
+# origin` (task 2) discards stderr. The identical scenario under Docker
+# needs none of this: Docker does not remap uids by default, so container
+# uid 1000 already IS host uid 1000. `--userns=keep-id` is podman's own,
+# documented fix - it maps the CURRENT rootless user's uid to the SAME uid
+# inside the container - so it is added only when podman is the runtime,
+# never offered to Docker (which has no such flag and does not need one).
+# This is what makes --volume and --ssh's own uid-matching (below) actually
+# hold under rootless podman, not just under Docker - confirmed by hand both
+# ways; see the task report.
+if [ "$RUNTIME" = "podman" ]; then
+  RUN_ARGS+=(--userns=keep-id)
+fi
 
 if [ "$FORWARD_SSH" -eq 1 ]; then
   if [ -z "${SSH_AUTH_SOCK:-}" ]; then
