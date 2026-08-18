@@ -1504,13 +1504,44 @@ else
       && printf '#!/usr/bin/env bash\necho REUSE-OK\n' > start.sh && chmod +x start.sh \
       && $GIT add -A && $GIT commit -qm init \
       && git remote add origin "file:///srv/repo.git" ) >/dev/null 2>&1
-  # --build, DELIBERATELY: $IMAGE is built with $RUNTIME at the top of this file
-  # (docker, when both are installed), and podman keeps a separate store. Without
-  # this, podman reused whatever image of that name its store already held - on
+  # BUILT DIRECTLY WITH PODMAN, DELIBERATELY, RATHER THAN THROUGH `wrap --build`:
+  # $IMAGE is built with $RUNTIME at the top of this file (docker, when both are
+  # installed), and podman keeps a separate store, so without SOME rebuild here
+  # podman would reuse whatever image of that name its store already held - on
   # this machine, one built before the entrypoint fixes below were written, so
   # every podman assertion here was quietly checking a stale image. Found exactly
   # that way: the .git-only ownership test came back with the OLD message.
-  wrap --build --runtime podman --image "$IMAGE" --dockerfile "$DOCKERFILE" --volume "$TMP/podmanvol" \
+  #
+  # `wrap --build` used to do this rebuild, and that was itself the bug this
+  # comment now documents: heliograph.sh's own --build path never passes
+  # --build-arg HELIOGRAPH_UID (only --ssh's build-arg does), so that rebuild
+  # silently fell back to the Dockerfile's bare default (1000) - not $HOST_UID -
+  # discarding the very fix the top-of-file build applies. On a machine whose own
+  # uid happens to be 1000 that fallback is invisible; on GitHub Actions' runner
+  # (uid 1001) it rebuilds an image whose heliograph user does NOT match the
+  # invoking uid, so --userns=keep-id's identity mapping (host uid <-> the SAME
+  # container uid) maps the runner's own uid to a container uid nothing inside
+  # the image answers to, and heliograph (still uid 1000) sees the bind-mounted,
+  # runner-owned checkout as foreign - the exact dubious-ownership refusal this
+  # whole section exists to prove does NOT happen. Reproduced locally by hand: a
+  # Dockerfile whose own ARG default was pointed away from this host's uid hit
+  # this identical refusal through `wrap --build`, and stopped doing so once the
+  # rebuild below carried $HOST_UID explicitly - see the task report.
+  #
+  # Building directly with podman (mirroring the top-of-file build's own
+  # --build-arg HELIOGRAPH_UID=$HOST_UID line) fixes that: this image's
+  # heliograph user is pinned to THIS SCRIPT's own uid on any host, the same
+  # property every other fixture in this file already depends on, not merely on
+  # a host whose uid happens to already be 1000.
+  echo "building $IMAGE for podman specifically (HELIOGRAPH_UID=$HOST_UID) ..."
+  PODMAN_BUILD_OUT="$(podman build -f "$DOCKERFILE" -t "$IMAGE" --build-arg "HELIOGRAPH_UID=$HOST_UID" "$DOCKER_DIR" 2>&1)"
+  if [ $? -ne 0 ]; then
+    printf '%s\n' "$PODMAN_BUILD_OUT"
+    t_no "the image builds for podman at this host's own uid"
+  else
+    t_ok "the image builds for podman at this host's own uid"
+  fi
+  wrap --runtime podman --image "$IMAGE" --dockerfile "$DOCKERFILE" --volume "$TMP/podmanvol" \
     "file:///srv/repo.git"
   assert_eq "the reuse path genuinely succeeds under a real rootless podman container" "0" "$RC"
   assert_contains "recognising the checkout, rather than a silent dubious-ownership refusal" \
