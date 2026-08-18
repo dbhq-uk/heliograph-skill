@@ -2,10 +2,16 @@
 # =============================================================================
 #  test-container.sh - the properties the image has to guarantee
 # =============================================================================
-# This is PR 3 task 1: the image only. There is no entrypoint yet (task 2 adds
-# it), so every assertion here is about the image itself - what start.sh's own
-# preflight would find on this machine before it ever gets a chance to clone
-# anything.
+# Everything PR 3 ships, in one file, in the order it was built:
+#   1. THE IMAGE itself - what start.sh's own preflight would find on this
+#      machine before it ever gets a chance to clone anything.
+#   2. THE ENTRYPOINT - clone, refuse what must be refused, hand over to the
+#      cloned repo's own start.sh.
+#   3. heliograph.sh - the wrapper that turns a `docker run` into one line,
+#      including the shapes in which it must NOT throw a captured log away.
+# The sections are labelled below; each states what it is responsible for and,
+# just as importantly, what it deliberately leaves to the section or the test
+# file that already owns it.
 #
 # Every value asserted below is READ BACK FROM A RUNNING CONTAINER. None of it
 # is a fixture this file already knows the answer to: that "echoes its own
@@ -231,6 +237,16 @@ assert_eq "a credentialed URL is refused rather than cloned" "2" "$RC"
 assert_contains "and it names the reason" "embeds a credential" "$OUT"
 assert_eq "the token itself is never printed" "" "$(printf '%s' "$OUT" | grep -o "$TOKEN")"
 assert_contains "and it names the fix" "GIT_TOKEN" "$OUT"
+# PR 3 whole-PR review, Finding 2. The refusal used to reason only about
+# /proc/<pid>/cmdline INSIDE this container - the LAST place that string went.
+# By the time it fires the same URL has already been in the host's process
+# table (docker run's own argv) and in `docker inspect` .Config.Cmd, neither of
+# which anything in here can withdraw, so "pass the credential separately" on
+# its own tells an operator to keep using a token that is already exposed.
+assert_contains "and it says the credential is already spent, not merely mis-passed" \
+  "ROTATE THAT CREDENTIAL" "$OUT"
+assert_contains "naming where it has already gone that this container cannot reach" \
+  ".Config.Cmd" "$OUT"
 
 # Confirm by hand that the fixture token really WOULD end up in .git/config if
 # this refusal did not exist - the same mechanism a real `git clone
@@ -306,8 +322,31 @@ if [ "$(id -u)" != "0" ]; then
     "$(printf '%s' "$OUT" | grep -o 'credential: none')"
   chmod 644 "$TMP/unreadable-token"
 else
-  printf 'skip unreadable GIT_TOKEN_FILE test: running as root, where mode 000 is still readable\n'
+  t_skip 'the unreadable GIT_TOKEN_FILE test: running as root, where mode 000 is still readable'
 fi
+
+# --- a GIT_TOKEN_FILE that is readable but yields nothing ----------------------
+# PR 3 whole-PR review, Finding 4. `[ -r ]` is TRUE for a directory, and
+# GIT_TOKEN_FILE=/run/secrets - the secrets mount point rather than the file
+# inside it - is the mistake an operator actually makes. sed then reads
+# nothing, entrypoint_auth_header sends no header, the clone goes out
+# unauthenticated, and the one line printed about the credential used to say
+# "<path> (0 chars)": the token reported as in force at the moment git is
+# running with none. caplib.sh's cap_auth_describe documents having fixed
+# exactly this and prints "unreadable or its first line is empty, so no header
+# is sent"; the entrypoint claims the same precedence, so it has to agree.
+# No root needed and nothing to skip: a directory is readable by anyone.
+mkdir -p "$TMP/secretsdir"
+printf '%s\n' "$TOKEN" > "$TMP/secretsdir/git-token"
+run_entry -e GIT_TOKEN_FILE=/run/secrets \
+  -v "$TMP/secretsdir:/run/secrets:ro" \
+  "$IMAGE" "https://example.invalid/x.git"
+assert_contains "a GIT_TOKEN_FILE naming a directory reports that no header is sent" \
+  "/run/secrets is unreadable or its first line is empty, so no header is sent" "$OUT"
+assert_eq "never as '(0 chars)', which would claim a token is in force when none is" "" \
+  "$(printf '%s' "$OUT" | grep -o '(0 chars)')"
+assert_eq "and nothing from the file inside that directory is printed either" "" \
+  "$(printf '%s' "$OUT" | grep -o "$TOKEN")"
 
 # --- the happy path: clone, then genuinely hand over to start.sh ---------------
 make_transport_repo "$TMP/happy.git"
@@ -408,7 +447,7 @@ MISMATCH_UID=13345
 MISMATCH_TAG="heliograph-toolkit-test:local-ownermismatch"
 if ! "$RUNTIME" build -f "$DOCKERFILE" -t "$MISMATCH_TAG" \
      --build-arg "HELIOGRAPH_UID=$MISMATCH_UID" "$DOCKER_DIR" >/dev/null 2>&1; then
-  printf 'skip the ownership-mismatch tests: could not build an image at uid %s here\n' "$MISMATCH_UID"
+  t_skip "the ownership-mismatch tests: could not build an image at uid $MISMATCH_UID here"
 else
   make_transport_repo "$TMP/ownership.git"
   mkdir -p "$TMP/ownvol"
@@ -468,6 +507,52 @@ else
     "--build-arg HELIOGRAPH_UID=$(id -u)" "$OUT"
   assert_eq "the evidence an operator following the old advice would have destroyed survives" \
     "the only copy of a captured log" "$(cat "$TMP/ownvol/ops-logs/UNPUSHED_EVIDENCE" 2>/dev/null)"
+
+  # ---------------------------------------------------------------------------
+  # THE SHAPE THAT ESCAPED THE DIAGNOSIS ENTIRELY - whole-PR review, Finding 3
+  # ---------------------------------------------------------------------------
+  # A foreign-owned checkout at mode 0700. Every test the entrypoint made
+  # before reaching the branch above answers identically to EACCES and to
+  # "nothing here": `[ -e "$WORKDIR/.git" ]` is false, `[ -x
+  # "$WORKDIR/start.sh" ]` is false, and `[ -n "$(ls -A "$WORKDIR"
+  # 2>/dev/null)" ]` is an empty string with a discarded exit status. So this
+  # fell all the way through to the CLONE, git printed its own accurate
+  # permission error, and the entrypoint then contradicted it by blaming the
+  # URL or the credential - with the entire ownership diagnosis above,
+  # including its DO-NOT-EMPTY rule, never reached on the one shape most
+  # likely to need it.
+  #
+  # Same uid-mismatched image as above, so no root and no chown is required to
+  # build the state: the directory belongs to this test user, mode 0700, and
+  # the container runs as someone else.
+  mkdir -p "$TMP/unreadablevol"
+  ( cd "$TMP/unreadablevol" && git init -q \
+      && printf '#!/usr/bin/env bash\necho UNREADABLE\n' > start.sh && chmod +x start.sh \
+      && git remote add origin "file:///srv/repo.git" \
+      && $GIT add -A && $GIT commit -qm init ) >/dev/null 2>&1
+  printf 'an unpushed log lives here too\n' > "$TMP/unreadablevol/UNPUSHED_EVIDENCE"
+  chmod 700 "$TMP/unreadablevol"
+  run_entry -v "$TMP/unreadablevol:/home/heliograph/repo" \
+    "$MISMATCH_TAG" "file:///srv/repo.git" --check
+  assert_eq "a checkout this container cannot even list is refused, not cloned over" "1" "$RC"
+  assert_contains "and it lands in the UNIDENTIFIED branch, where the diagnosis lives" \
+    "cannot identify what /home/heliograph/repo holds" "$OUT"
+  assert_contains "naming the real cause rather than the URL or the credential" \
+    "The cause is an OWNERSHIP MISMATCH, not a different repository" "$OUT"
+  assert_contains "with the uid that owns it" \
+    "/home/heliograph/repo is owned by uid $(id -u)" "$OUT"
+  # DISCRIMINATION: the three branches this could have taken all exit 1, so
+  # each of the other two messages is asserted ABSENT. "git clone failed" is
+  # the one it actually reached before this fix.
+  assert_eq "never as a clone failure blamed on the URL or the credential" "" \
+    "$(printf '%s' "$OUT" | grep -o 'git clone failed')"
+  assert_eq "nor as a foreign non-empty directory, which is a different fact" "" \
+    "$(printf '%s' "$OUT" | grep -o 'not a heliograph checkout')"
+  assert_contains "and the DO-NOT-EMPTY rule reaches this path too" \
+    "DO NOT empty or delete" "$OUT"
+  chmod 755 "$TMP/unreadablevol"
+  assert_eq "the checkout is still there, untouched" "an unpushed log lives here too" \
+    "$(cat "$TMP/unreadablevol/UNPUSHED_EVIDENCE" 2>/dev/null)"
 
   "$RUNTIME" image rm -f "$MISMATCH_TAG" >/dev/null 2>&1
 fi
@@ -715,6 +800,16 @@ wrap() {
   OUT="$(timeout 30 "$WRAP" "$@" 2>&1)" || RC=$?
 }
 
+# composed_cmd - just the `docker run ...`/`podman run ...` line out of a
+# --print run's output. heliograph.sh now prints advice on stderr alongside it
+# (what to do if the push fails, which variable it left behind), and that prose
+# NAMES the flags it is talking about - so an assertion that greps the whole
+# capture for "--rm" is satisfied by a sentence explaining --rm. The composed
+# command is one line and always starts with the runtime's own name.
+composed_cmd() {
+  printf '%s\n' "$1" | grep -E '^(docker|podman) run' | tail -1
+}
+
 # wrap_bounded <seconds> <args...> - same, with a caller-chosen bound. Used to
 # prove foreground genuinely blocks (a bound shorter than the stub's own
 # runtime has to fire) and that --detach genuinely returns before it would.
@@ -849,6 +944,131 @@ wrap --dockerfile /no/such/Dockerfile-anywhere "https://example.invalid/x.git"
 assert_eq "--dockerfile naming a path that does not exist is refused immediately" "1" "$RC"
 assert_contains "and it names the flag and the missing path" \
   "--dockerfile /no/such/Dockerfile-anywhere does not exist" "$OUT"
+
+# --- a relative mount source becomes a NAMED VOLUME - Finding 5 ----------------
+# docker and podman read a `-v` source that does not begin with / as a named
+# volume rather than a path, and CREATE it empty rather than refusing. So
+# `--token-file mytoken` composed `-v mytoken:/run/heliograph/git-token:ro`,
+# mounted a brand new empty volume where the credential should have been, and
+# the clone went out unauthenticated with nothing but a "no header is sent"
+# line to show for it. `--volume somedir` is the same trap with a worse
+# ending: the checkout the operator meant to keep is not the one the container
+# used, so the persistence the flag exists for silently did not happen - and,
+# since Finding 1, that is also the copy of a failed run's log.
+#
+# --token-file's fixture exists here on purpose: the existence check it
+# already had passes for a relative path that is really there, so the refusal
+# has to be about the SHAPE of the value, not about the file being missing.
+( cd "$TMP" && printf 'tok\n' > relative-token && mkdir -p relative-dir )
+( cd "$TMP" && "$WRAP" --token-file relative-token "https://example.invalid/x.git" >/dev/null 2>&1 )
+rel_rc=$?
+assert_eq "--token-file with a relative path is refused even though the file exists" "2" "$rel_rc"
+OUT="$( cd "$TMP" && "$WRAP" --token-file relative-token "https://example.invalid/x.git" 2>&1 )"
+assert_contains "and it names the flag, the value and the named-volume trap" \
+  "--token-file expects an ABSOLUTE path to the token file, but got 'relative-token'" "$OUT"
+assert_contains "explaining what the runtime would have done with it instead" \
+  "NAMED VOLUME" "$OUT"
+assert_contains "and offering the absolute form of the very value that was given" \
+  "$TMP/relative-token" "$OUT"
+
+OUT="$( cd "$TMP" && "$WRAP" --volume relative-dir "https://example.invalid/x.git" 2>&1 )"
+rel_rc=$?
+assert_eq "--volume with a relative path is refused too" "2" "$rel_rc"
+assert_contains "in the same voice, naming --volume rather than --token-file" \
+  "--volume expects an ABSOLUTE path to the host directory, but got 'relative-dir'" "$OUT"
+# And nothing was created behind the operator's back while finding that out.
+assert_eq "and no named volume was created for either refusal" "" \
+  "$("$RUNTIME" volume ls --format '{{.Name}}' 2>/dev/null | grep -x 'relative-token\|relative-dir')"
+
+# --- a credentialed URL is refused HERE too - Finding 2 ------------------------
+# entrypoint.sh already refuses this, and that refusal is asserted further up
+# this file. It is not enough on its own: by the time it runs, the wrapper has
+# already composed that string into `docker run`'s argv, which puts it in the
+# HOST's process table and in `docker inspect .Config.Cmd` for the container's
+# whole life - neither of which anything inside the container can undo. The
+# only place the host-side half can be prevented is before the exec, so it is
+# refused here as well, and the message says the part entrypoint.sh cannot
+# know: the credential is already exposed and has to be rotated.
+WRAP_TOKEN="heliograph-wrapper-url-fixture-5b1e"
+wrap --image "$IMAGE" "https://ci-user:$WRAP_TOKEN@example.invalid/x.git"
+assert_eq "a credentialed URL is refused by the wrapper, before any runtime command is composed" \
+  "2" "$RC"
+assert_eq "and the wrapper never prints the token itself" "" \
+  "$(printf '%s' "$OUT" | grep -o "$WRAP_TOKEN")"
+assert_contains "it quotes the URL masked, so the operator can see which one it means" \
+  "https://ci-user:***@example.invalid/x.git" "$OUT"
+assert_contains "and says the credential is already spent, not merely mis-passed" \
+  "TREAT THAT CREDENTIAL AS COMPROMISED AND ROTATE IT" "$OUT"
+assert_contains "naming the host-side exposure entrypoint.sh cannot reach" \
+  ".Config.Cmd" "$OUT"
+# DISCRIMINATION: the refusal has to be the WRAPPER's, made before the runtime
+# was reached at all - not entrypoint.sh's, surfacing through a container that
+# was started with the credential already on its command line.
+assert_eq "it is the wrapper's own refusal - no container was started to produce it" "" \
+  "$(printf '%s' "$OUT" | grep -o 'entrypoint: the repository URL embeds a credential')"
+# The same refusal for a credentialed URL arriving as a start.sh argument
+# rather than as the URL, which leaks identically.
+REPO_URL="file:///srv/repo.git" wrap --print --image "$IMAGE" -- --branch "https://x:$WRAP_TOKEN@example.invalid/y.git"
+assert_eq "a credentialed value anywhere in the passthrough is refused, not just the first token" \
+  "2" "$RC"
+# NOT REFUSED: an ssh URL's git@ is a username, not a secret, and rejecting it
+# would break the transport references/transport.md actually prefers. This is
+# the boundary of the check, asserted so it cannot quietly widen.
+wrap --print --image "$IMAGE" "ssh://git@example.invalid/x.git"
+assert_eq "an ssh URL's git@ username is not mistaken for a credential" "0" "$RC"
+assert_contains "and the URL reaches the composed command untouched" \
+  "ssh://git@example.invalid/x.git" "$OUT"
+
+# --- a registry-qualified --image is pulled, never built - Finding 6 -----------
+# `--image ghcr.io/org/heliograph-toolkit:v9.9.9` used to BUILD the local
+# Dockerfile and tag the result with the published name. references/container.md
+# presents pulling and building as the two distinct paths, and the publish
+# workflow's whole argument is that the image at a tag can only be what that
+# tag's commit produced; a consumer-side build tagged with the published name
+# undoes that in the one place nobody would look.
+REG_TAG="registry.invalid/example/heliograph-toolkit:v9.9.9"
+wrap --no-build --image "$REG_TAG" "https://example.invalid/x.git"
+assert_eq "--no-build against a registry tag refuses" "1" "$RC"
+assert_contains "and says to PULL it, not to build it - the advice the old message got wrong" \
+  "names a registry, so the thing to do is pull it, not build it" "$OUT"
+# The default path: no --no-build, so the old code would have built it here.
+# registry.invalid cannot resolve, so the pull fails fast and deterministically
+# whether or not this machine has a network.
+wrap --image "$REG_TAG" "https://example.invalid/x.git"
+assert_eq "the default path pulls, and a failed pull is a refusal" "1" "$RC"
+assert_contains "naming the pull as what failed" "pull of $REG_TAG failed" "$OUT"
+assert_contains "and refusing to fabricate a published name from a local build" \
+  "Refusing to build the local Dockerfile and tag the result" "$OUT"
+# The property, not just the message: nothing was built under that name.
+assert_eq "and nothing was built under the published name" "1" \
+  "$("$RUNTIME" image inspect "$REG_TAG" >/dev/null 2>&1; echo $?)"
+# A local tag with a slash but no registry-looking first segment is NOT
+# treated as a registry reference - so this stays a narrow rule rather than
+# "anything with a slash in it".
+wrap --print --image "my-team/heliograph:local" "https://example.invalid/x.git"
+assert_eq "a plain namespaced local tag is unaffected by the registry rule" "0" "$RC"
+
+# --- REPO_URL is not forwarded when a URL was typed - Finding 7 ----------------
+# entrypoint.sh refuses REPO_URL and a positional argument together. The
+# wrapper forwarded an exported REPO_URL unconditionally, so a plain
+# `REPO_URL=... heliograph.sh <url>` died on a refusal naming a variable the
+# operator had not put on that command line, telling them to "drop REPO_URL" -
+# which the wrapper itself had added.
+REPO_URL="https://example.invalid/env-repo-url.git" wrap --print --image "$IMAGE" \
+  "https://example.invalid/typed.git"
+assert_eq "REPO_URL is NOT forwarded when a URL was also given on the command line" "" \
+  "$(printf '%s' "$OUT" | grep -o -- '-e REPO_URL')"
+assert_contains "and the wrapper says which one it dropped, rather than doing it silently" \
+  "REPO_URL is exported in this shell, and a URL was also given" "$OUT"
+assert_contains "the typed URL is what reaches the container" \
+  "https://example.invalid/typed.git" "$OUT"
+
+# End to end, against the real entrypoint: the shape that used to die does not.
+REPO_URL="file:///srv/does-not-matter.git" wrap --image "$IMAGE" --dockerfile "$DOCKERFILE" \
+  "https://example.invalid/nope.git"
+assert_eq "so the run reaches the clone rather than entrypoint.sh's both-were-given refusal" "" \
+  "$(printf '%s' "$OUT" | grep -o 'both REPO_URL and a command-line argument')"
+assert_contains "and fails on the URL it was actually given" "git clone failed" "$OUT"
 
 # =============================================================================
 #  the runtime-reachability guard (detect_runtime) - PR 3 review, Finding 3
@@ -996,6 +1216,113 @@ assert_eq "and it is genuinely still running the 20s stub, not finished and coin
 "$RUNTIME" rm -f "$BG_NAME" >/dev/null 2>&1
 
 # =============================================================================
+#  decision 3: a failed push must not lose the log - whole-PR review, Finding 1
+# =============================================================================
+# THE DEFECT, in the words of the thing that prints it: cap_push, when it
+# cannot push, commits the captured log locally and says "PUSH FAILED - run
+# 'git push' manually. The file is committed locally: <path>". In this
+# wrapper's DEFAULT shape - foreground, no --volume - that path is inside the
+# container, and `--rm` was added to every foreground run, so the container and
+# the only copy of the log were deleted the instant the process exited. The
+# remedy printed at that moment named a checkout that no longer existed.
+#
+# The triggers are ordinary: --once, `stop: yes`, Ctrl-C on the first
+# foreground run the docs recommend, `docker stop`, a reboot. AGENTS.md
+# constraint 2 - "a failed run still ships, and a failed push never loses a
+# log" - is what makes this data loss rather than untidiness.
+#
+# THE FIXTURE IS A REAL FAILED PUSH, not a stub that prints the words. A real
+# bare transport repo, seeded, then given a pre-receive hook that refuses every
+# push. `git push --dry-run` (start.sh's own write check) does NOT invoke that
+# hook, so the preflight passes exactly as it would against a healthy remote
+# and the failure lands where it does in the field: on the real push, after the
+# step has run and the log has been captured and committed. Confirmed by hand
+# before this test was written; see the fix report.
+make_pushfail_repo() {
+  local bare="$1" work="$1.work"
+  "$ROOT/skills/heliograph/scripts/bootstrap.sh" "$work" >/dev/null 2>&1
+  printf 'id: fail-push-1\nstep: env\nenv:\ncancel:\nstop:\nnote:\n' > "$work/agent/request"
+  git init -q --bare "$bare"
+  ( cd "$work" && git init -q && git remote add origin "$bare" \
+      && $GIT add -A && $GIT commit -qm init && $GIT push -q -u origin HEAD ) >/dev/null 2>&1
+  # Installed AFTER the seed push, so the repo has a branch to clone and only
+  # the container's own push is refused.
+  printf '#!/bin/sh\necho "policy: this branch is protected - push refused" >&2\nexit 1\n' \
+    > "$bare/hooks/pre-receive"
+  chmod +x "$bare/hooks/pre-receive"
+}
+
+# --- what the wrapper composes, first ------------------------------------------
+# The default shape must not carry --rm at all. --print, so this is the
+# composed command itself rather than an inference from a run's behaviour.
+wrap --print --image "$IMAGE" "https://example.invalid/x.git"
+assert_eq "the default shape composes NO --rm - the checkout is the only copy of a failed run's log" "" \
+  "$(composed_cmd "$OUT" | grep -o -- '--rm')"
+assert_contains "and the container is named, so what is kept can be addressed" \
+  "--name heliograph-" "$(composed_cmd "$OUT")"
+# The advice has to arrive BEFORE the run: the moment it is needed, the run is
+# over, cap_push's own message has scrolled past, and an operator who did not
+# know the container was kept has already typed `docker rm`.
+assert_contains "the recovery command is printed up front, naming this run's container" \
+  "cp heliograph-" "$OUT"
+assert_contains "and it names the directory the log is committed into" \
+  "/home/heliograph/repo/ops-logs/" "$OUT"
+
+# --volume: the checkout is on the host, so removing the container loses
+# nothing and --rm comes back.
+wrap --print --image "$IMAGE" --volume "$TMP/plainvol-rm" "https://example.invalid/x.git"
+assert_contains "--volume restores --rm: the log survives on the host either way" \
+  "--rm" "$(composed_cmd "$OUT")"
+assert_eq "and no recovery advice is printed for a shape that does not need it" "" \
+  "$(printf '%s' "$OUT" | grep -o 'NOT removed when it exits')"
+
+# --rm as an explicit opt-in, with the cost stated rather than implied.
+wrap --print --image "$IMAGE" --rm "https://example.invalid/x.git"
+assert_contains "--rm still removes the container when asked for explicitly" \
+  "--rm" "$(composed_cmd "$OUT")"
+assert_contains "and says plainly what that costs on a failed push" \
+  "captured log is committed in that checkout and nowhere else" "$OUT"
+
+# --- and then the property itself, end to end ----------------------------------
+# THE RUNTIME IS INVOKED DIRECTLY HERE, deliberately, in exactly the shape the
+# assertions above just proved the wrapper composes (no --rm, --name given, no
+# --volume). The reason is mechanical: this fixture is a bare repo on the host
+# addressed by file://, which needs a bind mount, and heliograph.sh has no
+# general-purpose mount flag by design (decision 4). Going through the wrapper
+# would mean adding one just to test it. So the wrapper's own composition is
+# asserted above, and the consequence of that composition is asserted here.
+make_pushfail_repo "$TMP/pushfail.git"
+F1_NAME="heliograph-wraptest-pushfail-$$"
+"$RUNTIME" rm -f "$F1_NAME" >/dev/null 2>&1
+f1_out="$(timeout 240 "$RUNTIME" run --name "$F1_NAME" \
+  -v "$TMP/pushfail.git:/srv/repo.git" \
+  -- "$IMAGE" "file:///srv/repo.git" -- --once 2>&1)"
+assert_contains "the run really does reach cap_push's failed-push branch" \
+  "PUSH FAILED" "$f1_out"
+assert_contains "and says the log is committed locally, inside this container" \
+  "/home/heliograph/repo/ops-logs/" "$f1_out"
+assert_eq "the container still exists after the run has exited" "0" \
+  "$("$RUNTIME" inspect "$F1_NAME" >/dev/null 2>&1; echo $?)"
+# The recovery the wrapper printed, run for real against the container that
+# just failed to push.
+rm -rf "$TMP/f1-recovered"; mkdir -p "$TMP/f1-recovered"
+( cd "$TMP/f1-recovered" && "$RUNTIME" cp "$F1_NAME:/home/heliograph/repo/ops-logs/" . ) >/dev/null 2>&1
+recovered=0
+for f in "$TMP/f1-recovered"/ops-logs/env-*.txt; do
+  [ -f "$f" ] && recovered=$((recovered + 1))
+done
+assert_eq "and the captured log is recoverable from it with the printed cp command" "1" "$recovered"
+assert_contains "the recovered file really is the captured log, not an empty placeholder" \
+  "STEP: env" "$(cat "$TMP/f1-recovered"/ops-logs/env-*.txt 2>/dev/null)"
+# THE COUNTERFACTUAL, which is what --rm did on every foreground run: remove
+# the container and the same command recovers nothing at all.
+"$RUNTIME" rm -f "$F1_NAME" >/dev/null 2>&1
+rm -rf "$TMP/f1-after"
+( "$RUNTIME" cp "$F1_NAME:/home/heliograph/repo/ops-logs/" "$TMP/f1-after" ) >/dev/null 2>&1
+assert_eq "once the container is gone the log is gone with it - which is what --rm did by default" \
+  "gone" "$([ -d "$TMP/f1-after" ] && echo present || echo gone)"
+
+# =============================================================================
 #  decision 4: no mounts by default - each opt-in mount states its own reason
 # =============================================================================
 NOMOUNT_NAME="heliograph-wraptest-nomount-$$"
@@ -1067,7 +1394,17 @@ assert_eq "and its VALUE never appears in the printed command line" "" \
   "$(printf '%s' "$OUT" | grep -o "$ENV_TOKEN")"
 
 REPO_URL="https://example.invalid/env-repo-url.git" wrap --print --image "$IMAGE" -- --check
-assert_contains "REPO_URL already in the environment is forwarded by bare name too" "-e REPO_URL" "$OUT"
+# "-e REPO_URL" alone CANNOT FAIL for the property it names: it is a prefix of
+# "-e REPO_URL=<value>", so the very shape this assertion exists to forbid
+# satisfies it. Anchored on the token that follows instead - the next thing on
+# the composed line is another flag, never an "=" - and paired with a direct
+# assertion that no "-e REPO_URL=" appears at all.
+assert_contains "REPO_URL already in the environment is forwarded by bare name too" \
+  "-e REPO_URL --name " "$OUT"
+assert_eq "and never as -e REPO_URL=<value>, which would put the URL in this script's argv" "" \
+  "$(printf '%s' "$OUT" | grep -o -- '-e REPO_URL=')"
+assert_eq "so its value is nowhere on the composed command line" "" \
+  "$(printf '%s' "$OUT" | grep -o 'env-repo-url.git')"
 
 # =============================================================================
 #  podman: --userns=keep-id, found in this task's own testing
@@ -1089,7 +1426,7 @@ assert_contains "REPO_URL already in the environment is forwarded by bare name t
 # whole file skips when no runtime at all is reachable, if podman
 # specifically is not present here.
 if ! command -v podman >/dev/null 2>&1 || ! podman info >/dev/null 2>&1; then
-  printf 'skip podman --userns=keep-id tests: podman is not reachable on this machine\n'
+  t_skip 'the podman --userns=keep-id tests: podman is not reachable on this machine'
 else
   wrap --print --runtime podman --image "$IMAGE" "https://example.invalid/x.git"
   assert_contains "podman gets --userns=keep-id, so a bind-mounted file's ownership survives" \
@@ -1107,18 +1444,70 @@ else
       && printf '#!/usr/bin/env bash\necho REUSE-OK\n' > start.sh && chmod +x start.sh \
       && $GIT add -A && $GIT commit -qm init \
       && git remote add origin "file:///srv/repo.git" ) >/dev/null 2>&1
-  wrap --runtime podman --image "$IMAGE" --dockerfile "$DOCKERFILE" --volume "$TMP/podmanvol" \
+  # --build, DELIBERATELY: $IMAGE is built with $RUNTIME at the top of this file
+  # (docker, when both are installed), and podman keeps a separate store. Without
+  # this, podman reused whatever image of that name its store already held - on
+  # this machine, one built before the entrypoint fixes below were written, so
+  # every podman assertion here was quietly checking a stale image. Found exactly
+  # that way: the .git-only ownership test came back with the OLD message.
+  wrap --build --runtime podman --image "$IMAGE" --dockerfile "$DOCKERFILE" --volume "$TMP/podmanvol" \
     "file:///srv/repo.git"
   assert_eq "the reuse path genuinely succeeds under a real rootless podman container" "0" "$RC"
   assert_contains "recognising the checkout, rather than a silent dubious-ownership refusal" \
     "already holds a clone" "$OUT"
+
+  # ---------------------------------------------------------------------------
+  # THE .git-ONLY OWNERSHIP SPLIT - whole-PR review, Finding 10
+  # ---------------------------------------------------------------------------
+  # foreign_owners loops over BOTH "$dir" and "$dir/.git" because git refuses
+  # on either one. Nothing asserted the second half: the ownership fixture
+  # further up this file makes the WORKTREE and the .git foreign together, so
+  # replacing `for p in "$dir" "$dir/.git"` with `for p in "$dir"` left the
+  # whole suite green - an unasserted guard on a Critical fix, in a project
+  # that has already shipped fourteen assertions that could not fail.
+  #
+  # The split is built WITHOUT ROOT: `podman unshare` runs in this user's own
+  # namespace, where chowning to 4242 is permitted and shows up as a
+  # subordinate uid on the host. Under --userns=keep-id the worktree (this
+  # user's own) maps to the container's uid and MATCHES, while .git does not -
+  # which is exactly the state that has to be diagnosed and could not be built
+  # any other way here.
+  mkdir -p "$TMP/splitvol"
+  ( cd "$TMP/splitvol" && git init -q -b main \
+      && printf '#!/usr/bin/env bash\necho SPLIT-OK\n' > start.sh && chmod +x start.sh \
+      && $GIT add -A && $GIT commit -qm init \
+      && git remote add origin "file:///srv/repo.git" ) >/dev/null 2>&1
+  if ! podman unshare chown 4242 "$TMP/splitvol/.git" >/dev/null 2>&1; then
+    t_skip 'the .git-only ownership split: podman unshare could not chown a path here'
+  else
+    wrap --runtime podman --image "$IMAGE" --dockerfile "$DOCKERFILE" --volume "$TMP/splitvol" \
+      "file:///srv/repo.git"
+    assert_eq "a checkout whose .git alone is foreign-owned is refused, not reused" "1" "$RC"
+    assert_contains "and it is diagnosed as an ownership mismatch" \
+      "The cause is an OWNERSHIP MISMATCH, not a different repository" "$OUT"
+    # THE SPLIT ITSELF: the .git line must be there, and the worktree line must
+    # NOT - the worktree genuinely matches, and claiming otherwise would be a
+    # false statement about the operator's own directory. This pair is what
+    # dies if the .git half of foreign_owners' loop is ever dropped.
+    assert_contains "naming the .git directory as the foreign-owned path" \
+      "/home/heliograph/repo/.git is owned by uid" "$OUT"
+    assert_eq "and NOT the working tree, which this container's user really does own" "" \
+      "$(printf '%s' "$OUT" | grep -o '/home/heliograph/repo is owned by uid')"
+    assert_contains "git's own error is quoted here too, not inferred" \
+      "detected dubious ownership in repository at" "$OUT"
+    assert_contains "and the checkout is protected, not offered up for deletion" \
+      "DO NOT empty or delete" "$OUT"
+    # Restore ownership so the EXIT trap can actually remove $TMP: a .git owned
+    # by a subordinate uid cannot be unlinked into by this user.
+    podman unshare chown -R 0 "$TMP/splitvol" >/dev/null 2>&1
+  fi
 fi
 
 # =============================================================================
 #  SSH forwarding - not optional, and the ownership problem
 # =============================================================================
 if ! command -v ssh-agent >/dev/null 2>&1 || ! command -v ssh-keygen >/dev/null 2>&1; then
-  printf 'skip --ssh end-to-end tests: no ssh-agent/ssh-keygen on this machine to build a fixture\n'
+  t_skip 'the --ssh end-to-end tests: no ssh-agent/ssh-keygen on this machine to build a fixture'
 else
   # --ssh without SSH_AUTH_SOCK set at all: refuse, rather than silently
   # mounting nothing and leaving the operator to discover that later.
@@ -1145,6 +1534,39 @@ else
   wrap --print --image "$IMAGE" --ssh "https://example.invalid/x.git"
   assert_contains "--ssh resolves its image tag from the SOCKET's own measured owning uid" \
     "$IMAGE-uid$sockuid_expect" "$OUT"
+  # THAT ASSERTION ALONE STILL CANNOT DISCRIMINATE, and saying so is cheaper
+  # than pretending otherwise: this fixture's agent is started by this test
+  # user, so `stat -c %u` on its socket is always `id -u`, and a wrapper that
+  # ignored the socket entirely and used `id -u` would satisfy it exactly.
+  # A socket owned by SOMEONE ELSE is what tells the two apart, and building
+  # one needs no root: `podman unshare chown` gives the socket to a
+  # subordinate uid, which `stat` on the host reads back as a number that is
+  # NOT this user's. Skipped, counted, where podman is not available.
+  if ! command -v podman >/dev/null 2>&1 || ! podman info >/dev/null 2>&1; then
+    t_skip 'the --ssh foreign-socket tag discrimination: podman unshare is needed to build a socket this user does not own'
+  else
+    mkdir -p "$TMP/foreignsock"
+    FOREIGN_SOCK="$TMP/foreignsock/agent.sock"
+    FOREIGN_AGENT="$(ssh-agent -a "$FOREIGN_SOCK" -s 2>/dev/null)"
+    FOREIGN_PID="$(printf '%s' "$FOREIGN_AGENT" | sed -n 's/.*SSH_AGENT_PID=\([0-9]*\).*/\1/p')"
+    if [ ! -S "$FOREIGN_SOCK" ] || ! podman unshare chown 4242 "$FOREIGN_SOCK" >/dev/null 2>&1; then
+      t_skip 'the --ssh foreign-socket tag discrimination: could not build a foreign-owned agent socket here'
+    else
+      foreign_uid="$(stat -c %u "$FOREIGN_SOCK" 2>/dev/null)"
+      # The fixture is only worth anything if it really is a uid this user is
+      # not - asserted, not assumed, so a podman that silently did nothing
+      # cannot leave the real assertion passing for the wrong reason.
+      assert_eq "the fixture socket really is owned by a uid this user is not" "different" \
+        "$([ -n "$foreign_uid" ] && [ "$foreign_uid" != "$(id -u)" ] && echo different || echo same)"
+      SSH_AUTH_SOCK="$FOREIGN_SOCK" wrap --print --image "$IMAGE" --ssh "https://example.invalid/x.git"
+      assert_contains "the tag tracks THAT uid, not this shell's own - the measurement is load-bearing" \
+        "$IMAGE-uid$foreign_uid" "$OUT"
+      assert_eq "and specifically not this user's uid, which is what a dropped measurement would give" "" \
+        "$(printf '%s' "$OUT" | grep -o -- "-uid$(id -u) ")"
+      podman unshare chown -R 0 "$TMP/foreignsock" >/dev/null 2>&1
+    fi
+    [ -n "$FOREIGN_PID" ] && kill "$FOREIGN_PID" >/dev/null 2>&1
+  fi
 
   ssh-keygen -q -t ed25519 -N '' -f "$TMP/sshtestkey"
   ssh-add "$TMP/sshtestkey" >/dev/null 2>&1
@@ -1156,7 +1578,7 @@ else
       && git remote add origin "file:///srv/repo.git" && $GIT add -A && $GIT commit -qm init ) >/dev/null 2>&1
 
   if [ -z "$HOST_FP" ]; then
-    printf 'skip --ssh positive/contrast tests: could not add a fixture key to a local ssh-agent\n'
+    t_skip 'the --ssh positive/contrast tests: could not add a fixture key to a local ssh-agent'
   else
     wrap --image "$IMAGE" --dockerfile "$DOCKERFILE" --ssh --volume "$TMP/sshvol" "file:///srv/repo.git"
     assert_contains "the forwarded, uid-matched socket is usable as the heliograph user inside the container" \
@@ -1178,7 +1600,7 @@ else
         "" "$(printf '%s' "$badout" | grep -o "$HOST_FP")"
       "$RUNTIME" image rm -f "$BAD_TAG" >/dev/null 2>&1
     else
-      printf 'skip the uid-mismatch contrast: could not build an image at uid %s on this machine\n' "$WRONG_UID"
+      t_skip "the uid-mismatch contrast: could not build an image at uid $WRONG_UID on this machine"
     fi
   fi
 
@@ -1194,5 +1616,24 @@ fi
 if command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1; then
   podman image rm -f "$IMAGE-uid$(id -u)" >/dev/null 2>&1
 fi
+
+# --- the containers this file's own runs leave behind ---------------------------
+# NEW SINCE Finding 1: heliograph.sh no longer adds --rm to a foreground run
+# with no --volume, deliberately, because that is how a failed push's log
+# survives. Correct in the field and untidy in a test suite, which starts
+# dozens of such runs - so they are cleaned up here, by ANCESTOR IMAGE rather
+# than by name. Filtering on the "heliograph-" name prefix the wrapper now
+# defaults to would risk removing a real operator's kept container on a
+# developer's own machine, which is precisely the thing that fix exists to
+# stop. Every image named here is one this file built itself.
+for stale_image in "$IMAGE" "$IMAGE-uid$(id -u)" "heliograph-wraptest:local" \
+                   "heliograph-toolkit-test:local-ownermismatch" "my-team/heliograph:local"; do
+  for stale_runtime in "$RUNTIME" podman docker; do
+    command -v "$stale_runtime" >/dev/null 2>&1 || continue
+    "$stale_runtime" info >/dev/null 2>&1 || continue
+    stale_ids="$("$stale_runtime" ps -aq --filter "ancestor=$stale_image" 2>/dev/null)"
+    [ -n "$stale_ids" ] && "$stale_runtime" rm -f $stale_ids >/dev/null 2>&1
+  done
+done
 
 t_summary
