@@ -126,6 +126,20 @@ run_in() {
   "$RUNTIME" run --rm --entrypoint "$cmd" "$IMAGE" "$@"
 }
 
+# --- the image's own user genuinely runs at THIS SCRIPT's own uid --------------
+# The regression this guards against: a future edit that drops
+# --build-arg HELIOGRAPH_UID=$HOST_UID above, or hardcodes some other number
+# in its place. That regression shipped once already, and it is INVISIBLE on
+# a development machine whose own uid happens to be 1000 - the Dockerfile's
+# bare default - which is exactly this repo's dev machine and exactly why it
+# went uncaught here and only failed in CI (runner uid 1001). Comparing the
+# CONTAINER's own measured uid against THIS SCRIPT's own measured uid - never
+# a literal number on either side - is what makes the guard fail on ANY host
+# where they diverge, including this one, rather than only on a host that
+# happens not to be 1000.
+out="$(run_in id -u)"
+assert_eq "the image's own user runs at this host's own uid, not a hardcoded one" "$HOST_UID" "$out"
+
 # --- bash is 4 or newer --------------------------------------------------------
 # The comparison runs INSIDE the container, against that container's own
 # BASH_VERSINFO, and only the resulting word crosses back out. Asserting on a
