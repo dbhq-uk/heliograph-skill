@@ -46,6 +46,28 @@ DOCKERFILE="$ROOT/skills/heliograph/toolkit/docker/Dockerfile"
 DOCKER_DIR="$(dirname "$DOCKERFILE")"
 IMAGE="heliograph-toolkit-test:local"
 
+# HOST_UID - measured, never assumed, and used to build $IMAGE below. Every
+# "happy path" fixture past this point bind-mounts a directory this SCRIPT
+# creates (owned by whoever is running it) into a container running as
+# $IMAGE's own user. Building $IMAGE at the Dockerfile's bare default
+# (HELIOGRAPH_UID=1000) only matched that on a machine whose own uid happens
+# to be 1000, and this repo's development machine's uid IS 1000 - a
+# coincidence, not a property. GitHub Actions' runner user is uid 1001, so
+# every one of those fixtures hit the same dubious-ownership refusal
+# (CVE-2022-24765) entrypoint.sh is deliberately supposed to raise for a
+# GENUINE mismatch, and the whole "clone + handover succeeds" shape of
+# assertion failed there - not because the product is wrong (it is not;
+# that refusal is the fix for an earlier Critical, and stays), but because
+# these fixtures never matched this script's own uid to the image's. This is
+# exactly the pattern --ssh already uses for the identical reason (see
+# heliograph.sh's own SSH FORWARDING comment): build the image AT the uid
+# that is actually going to own the bind-mounted files, rather than assume a
+# fixed number. It does NOT touch the DELIBERATE mismatch fixtures further
+# down this file (MISMATCH_TAG, BAD_TAG) - those build at an arbitrary,
+# unrelated uid on purpose, to construct the very refusal this script's own
+# uid must never accidentally trigger nor accidentally suppress.
+HOST_UID="$(id -u)"
+
 RUNTIME=""
 for candidate in docker podman; do
   if command -v "$candidate" >/dev/null 2>&1 && "$candidate" info >/dev/null 2>&1; then
@@ -72,8 +94,13 @@ fi
 . "$HERE/assert.sh"
 
 # --- build once ----------------------------------------------------------------
-echo "building $IMAGE from $DOCKERFILE with $RUNTIME ..."
-BUILD_OUT="$("$RUNTIME" build -f "$DOCKERFILE" -t "$IMAGE" "$DOCKER_DIR" 2>&1)"
+# --build-arg HELIOGRAPH_UID=$HOST_UID: see HOST_UID's own comment above. This
+# is the one build every "happy path" fixture below reuses, so building it at
+# this script's own uid is what makes every bind-mounted fixture's ownership
+# match the container's user, on ANY host, rather than only on one whose uid
+# happens to already be 1000.
+echo "building $IMAGE from $DOCKERFILE with $RUNTIME (HELIOGRAPH_UID=$HOST_UID) ..."
+BUILD_OUT="$("$RUNTIME" build -f "$DOCKERFILE" -t "$IMAGE" --build-arg "HELIOGRAPH_UID=$HOST_UID" "$DOCKER_DIR" 2>&1)"
 BUILD_RC=$?
 if [ "$BUILD_RC" -ne 0 ]; then
   printf '%s\n' "$BUILD_OUT"
