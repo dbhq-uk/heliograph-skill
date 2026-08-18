@@ -368,6 +368,18 @@ assert_eq "the token never reaches argv" "" \
   "$(printf '%s\n' "$report" | grep '^ARGV:' | grep -o "$TOKEN")"
 assert_eq "nor /proc/self/cmdline of the git process that did the cloning" "" \
   "$(printf '%s\n' "$report" | grep '^CMDLINE:' | grep -o "$TOKEN")"
+# The property is "no auth header reaches argv AT ALL", not just "the raw
+# token substring is absent" - test-capgit.sh's own comment names this
+# exactly: base64(":$TOKEN") never contains the plaintext token even when
+# `-c http.extraHeader=...` is used, so the two assertions above alone would
+# still pass under an entrypoint.sh that took the env route AND left a `-c`
+# fallback reachable when it should not be. Confirmed by mutation: forcing
+# the old-git `-c` fallback unconditionally left the two assertions above
+# GREEN (the base64 blob it puts in argv never contains "9f2c8a" et al.
+# verbatim) while this one goes red. Assert on the marker that WOULD be in
+# argv under that regression instead, exactly as test-capgit.sh does.
+assert_eq "and no -c http.extraHeader reaches argv either (base64 is not secrecy)" "" \
+  "$(printf '%s\n' "$report" | grep '^ARGV:' | grep -o extraHeader)"
 EXPECTED_HDR_B64="$(printf ':%s' "$TOKEN" | base64 -w0)"
 assert_contains "the header DOES travel, through GIT_CONFIG_VALUE_0 (env, mode 400), not argv" \
   "GIT_CONFIG_VALUE_0=Authorization: Basic $EXPECTED_HDR_B64" "$report"
