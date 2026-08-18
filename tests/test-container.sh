@@ -610,16 +610,26 @@ assert_eq "and it genuinely exists afterward" "0" \
   "$("$RUNTIME" image inspect "$WRAP_TAG" >/dev/null 2>&1; echo $?)"
 
 wrap --image "$WRAP_TAG" --dockerfile "$DOCKERFILE" "https://example.invalid/x.git"
+# Neither build-announcing message, not just the "missing" one - a mutation
+# that always rebuilds still prints the OTHER message (the --build one,
+# "rebuilding ... (--build was given)") on this path, which a grep for only
+# "building it now" would miss entirely. Found by mutation; see the report.
 assert_eq "a second run against the same tag does NOT rebuild it" "" \
-  "$(printf '%s' "$OUT" | grep -o 'building it now')"
+  "$(printf '%s' "$OUT" | grep -E 'no image tagged|rebuilding')"
 
 # --no-build: refuse rather than build, and genuinely build nothing
 "$RUNTIME" image rm -f "$WRAP_TAG" >/dev/null 2>&1
 wrap --image "$WRAP_TAG" --dockerfile "$DOCKERFILE" --no-build "https://example.invalid/x.git"
 assert_eq "--no-build refuses rather than building when the image is missing" "1" "$RC"
-assert_contains "and names the missing tag" "no image tagged $WRAP_TAG" "$OUT"
-assert_contains "and names --no-build as the reason it did not just build it" \
-  "--no-build was given" "$OUT"
+# The RC check alone is not a real discriminator here: a refusal that fell
+# through to building anyway would still exit 1, coincidentally, once the
+# bogus fixture URL's clone failed a few seconds later inside the container -
+# found by mutation (see the task report). "no image tagged $WRAP_TAG" alone
+# is not one either: that fragment is a PREFIX shared with the auto-build
+# message ("... - building it now"), so it stayed green under the same
+# mutation. Only the full, refuse-specific sentence discriminates.
+assert_contains "and names the missing tag and --no-build as the reason together" \
+  "no image tagged $WRAP_TAG, and --no-build was given" "$OUT"
 assert_eq "and nothing was actually built" "1" \
   "$("$RUNTIME" image inspect "$WRAP_TAG" >/dev/null 2>&1; echo $?)"
 
@@ -695,6 +705,16 @@ assert_contains "onto the working directory entrypoint.sh actually reads (HELIOG
   "/home/heliograph/repo" "$vol_mounts"
 "$RUNTIME" rm -f "$VOL_NAME" >/dev/null 2>&1
 
+# The MOUNT TARGET alone happens to equal today's Dockerfile's own default
+# ($HOME/repo, with HOME=/home/heliograph) - dropping the explicit env var
+# entirely is invisible against the CURRENT image, found by mutation. This
+# checks the WIRING itself, independent of that coincidence, the same way
+# the --ssh tag-selection assertion above does not rely on this host's own
+# uid happening to match the default.
+wrap --print --image "$IMAGE" --volume "$TMP/plainvol" "https://example.invalid/x.git"
+assert_contains "--volume also sets HELIOGRAPH_WORKDIR explicitly, not relying on \$HOME matching by luck" \
+  "-e HELIOGRAPH_WORKDIR=/home/heliograph/repo" "$OUT"
+
 # --token-file: mounted read-only, and wired to GIT_TOKEN_FILE end to end
 TOKFILE_TOKEN="heliograph-wrapper-fixture-tok-4e9a1c"
 printf '%s\n' "$TOKFILE_TOKEN" > "$TMP/wraptoken"
@@ -755,6 +775,19 @@ else
   # exactly what this section proves, so it needs a socket that really is
   # owned the way a forwarded operator's agent would be.
   eval "$(ssh-agent -s)" >/dev/null
+
+  # The MECHANISM, not just the end-to-end symptom - --print, so no build is
+  # needed. Deliberately independent of this test host's own uid: on a
+  # machine whose uid happens to be 1000 (the image's own default), removing
+  # the uid-matching logic entirely still "works" by coincidence, which is
+  # exactly what happened here on first mutation - see the task report. This
+  # asserts the TAG heliograph.sh actually selects tracks the SOCKET's own
+  # measured owner, not the fact that forwarding merely succeeds.
+  sockuid_expect="$(stat -c %u "$SSH_AUTH_SOCK" 2>/dev/null || id -u)"
+  wrap --print --image "$IMAGE" --ssh "https://example.invalid/x.git"
+  assert_contains "--ssh resolves its image tag from the SOCKET's own measured owning uid" \
+    "$IMAGE-uid$sockuid_expect" "$OUT"
+
   ssh-keygen -q -t ed25519 -N '' -f "$TMP/sshtestkey"
   ssh-add "$TMP/sshtestkey" >/dev/null 2>&1
   HOST_FP="$(ssh-add -l 2>/dev/null | awk '{print $2}')"
