@@ -959,26 +959,35 @@ assert_contains "and it names the flag and the missing path" \
 # --token-file's fixture exists here on purpose: the existence check it
 # already had passes for a relative path that is really there, so the refusal
 # has to be about the SHAPE of the value, not about the file being missing.
-( cd "$TMP" && printf 'tok\n' > relative-token && mkdir -p relative-dir )
-( cd "$TMP" && "$WRAP" --token-file relative-token "https://example.invalid/x.git" >/dev/null 2>&1 )
+# Fixture names carry a prefix of their own so the "was a named volume
+# created" assertion below can clear its own leftovers first without any risk
+# of removing a volume that belongs to whoever is running this suite. Under
+# the defect (and under a mutation that restores it) the runtime really does
+# create these, and a leftover from one run would otherwise leave the
+# assertion red on every later one.
+REL_TOKEN="heliograph-fixture-reltoken"
+REL_DIR="heliograph-fixture-reldir"
+"$RUNTIME" volume rm "$REL_TOKEN" "$REL_DIR" >/dev/null 2>&1
+( cd "$TMP" && printf 'tok\n' > "$REL_TOKEN" && mkdir -p "$REL_DIR" )
+( cd "$TMP" && "$WRAP" --token-file "$REL_TOKEN" "https://example.invalid/x.git" >/dev/null 2>&1 )
 rel_rc=$?
 assert_eq "--token-file with a relative path is refused even though the file exists" "2" "$rel_rc"
-OUT="$( cd "$TMP" && "$WRAP" --token-file relative-token "https://example.invalid/x.git" 2>&1 )"
+OUT="$( cd "$TMP" && "$WRAP" --token-file "$REL_TOKEN" "https://example.invalid/x.git" 2>&1 )"
 assert_contains "and it names the flag, the value and the named-volume trap" \
-  "--token-file expects an ABSOLUTE path to the token file, but got 'relative-token'" "$OUT"
+  "--token-file expects an ABSOLUTE path to the token file, but got '$REL_TOKEN'" "$OUT"
 assert_contains "explaining what the runtime would have done with it instead" \
   "NAMED VOLUME" "$OUT"
 assert_contains "and offering the absolute form of the very value that was given" \
-  "$TMP/relative-token" "$OUT"
+  "$TMP/$REL_TOKEN" "$OUT"
 
-OUT="$( cd "$TMP" && "$WRAP" --volume relative-dir "https://example.invalid/x.git" 2>&1 )"
+OUT="$( cd "$TMP" && "$WRAP" --volume "$REL_DIR" "https://example.invalid/x.git" 2>&1 )"
 rel_rc=$?
 assert_eq "--volume with a relative path is refused too" "2" "$rel_rc"
 assert_contains "in the same voice, naming --volume rather than --token-file" \
-  "--volume expects an ABSOLUTE path to the host directory, but got 'relative-dir'" "$OUT"
+  "--volume expects an ABSOLUTE path to the host directory, but got '$REL_DIR'" "$OUT"
 # And nothing was created behind the operator's back while finding that out.
 assert_eq "and no named volume was created for either refusal" "" \
-  "$("$RUNTIME" volume ls --format '{{.Name}}' 2>/dev/null | grep -x 'relative-token\|relative-dir')"
+  "$("$RUNTIME" volume ls --format '{{.Name}}' 2>/dev/null | grep -x "$REL_TOKEN\|$REL_DIR")"
 
 # --- a credentialed URL is refused HERE too - Finding 2 ------------------------
 # entrypoint.sh already refuses this, and that refusal is asserted further up
