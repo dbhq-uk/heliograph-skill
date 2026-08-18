@@ -4,7 +4,7 @@
 
 **Goal:** Ship a lightweight image and a one-line wrapper so the loop can run somewhere nobody has to keep a terminal open, including a subscription the estate's own staff deploy into.
 
-**Architecture:** `toolkit/docker/Dockerfile` builds `debian:bookworm-slim` plus `git`, `ca-certificates`, `bash` and `sudo`, with an unprivileged user that has passwordless sudo. `toolkit/docker/entrypoint.sh` clones the transport repo and hands over to the repo's own `start.sh`, which already owns the preflight, the credential resolution and the handover to `agent.sh`. `toolkit/docker/heliograph.sh` wraps the `docker run` into one line and works with podman unchanged.
+**Architecture:** `toolkit/docker/Dockerfile` builds `debian:bookworm-slim` plus `git`, `ca-certificates`, `openssh-client` and `sudo` (`bash` is already in the base image and is not installed again; `openssh-client` is, because `transport.md` prefers SSH with a forwarded agent key), with an unprivileged user that has passwordless sudo. `toolkit/docker/entrypoint.sh` clones the transport repo and hands over to the repo's own `start.sh`, which already owns the preflight, the credential resolution and the handover to `agent.sh`. `toolkit/docker/heliograph.sh` wraps the `docker run` into one line and works with podman unchanged.
 
 **Tech Stack:** Docker or podman, bash, git. Tests are plain bash under `tests/`, using the existing `assert.sh` harness.
 

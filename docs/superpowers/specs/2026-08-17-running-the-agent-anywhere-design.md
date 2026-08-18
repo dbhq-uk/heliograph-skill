@@ -193,11 +193,18 @@ create and cheap to delete.
 
 ## PR 3: the container
 
-`debian:bookworm-slim` plus `git`, `ca-certificates`, `bash` and `sudo`. The base
-image measures 28MB pulled; the finished size is to be **measured and recorded,
-not asserted**. Alpine is smaller but busybox `sed` has no `-u`, and installing a
-GNU userland back in spends the size advantage to buy a footgun in the one place
-the toolkit cannot tolerate one.
+`debian:bookworm-slim` plus `git`, `ca-certificates`, `openssh-client` and
+`sudo`. **Not `bash`:** it already ships in the base image, and installing it
+again would be a package this list does not need. `openssh-client` does have to
+be installed, and is load-bearing rather than optional: `transport.md` states
+SSH with a forwarded agent key as the *preferred* transport, so an image with no
+`ssh` binary would make the recommended path impossible rather than merely
+unconfigured - and PR 4's reasoning about what ACI can and cannot forward
+depends on the binary being there. The base image measures 28MB pulled; the
+finished size is to be **measured and recorded, not asserted**. Alpine is
+smaller but busybox `sed` has no `-u`, and installing a GNU userland back in
+spends the size advantage to buy a footgun in the one place the toolkit cannot
+tolerate one.
 
 Three decisions taken before planning.
 
@@ -230,6 +237,58 @@ The honest limit: passwordless sudo still does not exercise the case
 Neither posture does, and the documentation should say so rather than imply the
 container covers it.
 
+### The invariant every deployment shape inherits
+
+**Any deployment shape must keep a committed-but-unpushed log recoverable after
+the process exits.** This is constraint 2 ("a failed run still ships, and a
+failed push never loses a log") restated for the shapes this design adds, and
+it is not automatic: it was broken on the first one. `cap_push` commits the log
+locally and prints "PUSH FAILED - run `git push` manually. The file is
+committed locally: `<path>`" precisely because a push that cannot be made is
+the case this toolkit exists to survive. If the checkout holding that path is
+destroyed when the process exits, the deliverable is destroyed with it, and the
+remedy the tool prints is an instruction nobody can follow.
+
+Concretely, per shape:
+
+- **PR 3, the container.** A `docker run --rm` with no bind-mounted checkout
+  fails this outright. So `--rm` is added only when the checkout survives
+  elsewhere (a `--volume`) or the operator opts in explicitly, the container is
+  otherwise kept and named, and the wrapper prints the `docker cp` that
+  retrieves the log *before* the run rather than after the evidence has gone.
+- **PR 5 and PR 6** inherit it cheaply: both run against a checkout on a real
+  filesystem that outlives the process, so the invariant holds as long as
+  nothing is added that cleans that checkout up.
+
+### PR 4 inherits this in a worse form: design for it, do not discover it
+
+Say it here rather than let it be found later. **A deleted ACI container group
+has no `docker cp`.** There is no host to reach into, no filesystem to inspect,
+and no equivalent of the recovery command PR 3 can print - so a log committed
+but not pushed inside an ACI container is unrecoverable *by construction* once
+that container group is gone, and a restart policy or a redeploy can take it
+away without anyone choosing to. PR 3's remedy does not port.
+
+PR 4 therefore has to solve this at deployment time, not at failure time. The
+options it should weigh, in the bicep rather than in prose:
+
+- **An Azure Files share mounted at the checkout path**, so the working tree
+  (and `ops-logs/` with it) lives outside the container group's lifetime and
+  can be read from the portal or `az storage` after the group is gone. This is
+  the direct analogue of PR 3's `--volume`, and the invariant makes it the
+  default rather than an option.
+- **A restart policy that does not silently recycle the only copy.** `Always`
+  restarting a container whose checkout is ephemeral repeatedly destroys
+  whatever the previous attempt captured.
+- **A second escape route for the log that does not depend on the same
+  credential as the push** - the push failing is the whole premise of this
+  invariant, so anything that reuses that credential to get the log out is not
+  a fallback. Any such route still has to satisfy "no secret in the template",
+  which the managed identity above already answers for the token.
+
+Whichever it picks, the PR is not done until an ACI run whose push fails can
+still be shown to have delivered its log.
+
 ## PR 4: Azure
 
 Azure Container Instances, deployed from a bicep file in `toolkit/azure/`. ACI
@@ -239,6 +298,13 @@ the git host, and nothing else.
 
 A user-assigned managed identity reads the token from Key Vault, so no secret
 appears in the template.
+
+It also inherits the log-recovery invariant stated in PR 3, in its hardest
+form - see "PR 4 inherits this in a worse form" above. A deleted container
+group has no `docker cp`, so an unpushed log there is unrecoverable by
+construction unless the deployment gives the checkout somewhere to live that
+outlasts the group. Treat that as a requirement of the bicep, not as an
+operational nicety.
 
 The part that matters more than the template: this is a file **they** deploy into
 **their** subscription, reviewable before it runs. That preserves the property the
