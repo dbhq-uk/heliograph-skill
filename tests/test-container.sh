@@ -369,6 +369,120 @@ assert_contains "and it names the repo the volume actually holds" \
 assert_contains "and the one this run was given" "file:///srv/beta.git" "$OUT"
 assert_eq "the old checkout's remote is left exactly as it was, not silently repointed" \
   "file:///srv/alpha.git" "$(cd "$TMP/mismatchvol" && git remote get-url origin 2>/dev/null)"
+# DISCRIMINATION, not just a refusal. This path and the two UNIDENTIFIED
+# paths below all end in "exit 1", which is exactly the shape the plan warns
+# about - an assertion whose subject is reachable by more than one path. The
+# exit code alone cannot tell them apart, so each path asserts on the
+# MESSAGE, and each asserts the OTHER path's message is absent. Here: this is
+# a repository the entrypoint genuinely READ and identified, so it must not
+# be dressed up as the ownership failure below.
+assert_eq "a genuinely different repo is NOT misreported as an ownership problem" "" \
+  "$(printf '%s' "$OUT" | grep -o 'OWNERSHIP MISMATCH')"
+assert_eq "nor as a directory whose contents could not be identified" "" \
+  "$(printf '%s' "$OUT" | grep -o 'cannot identify what')"
+
+# =============================================================================
+#  a checkout that cannot be READ is UNIDENTIFIED, not "a different repo"
+# =============================================================================
+# PR 3 whole-PR review, Finding 1 (Critical). `git remote get-url origin` has
+# THREE outcomes, and two of them used to be one branch: the read succeeding
+# with a different URL, and the read FAILING, both landed in the same message.
+# `2>/dev/null` swallowed git's error and `${existing_url:-<no origin remote>}`
+# rendered the failure as a positive claim - "already holds a clone of <no
+# origin remote>" - which then advised emptying the directory by hand.
+#
+# The trigger is an ownership mismatch: git refuses to read a repository owned
+# by a different uid than the process reading it (CVE-2022-24765). Reproduced
+# under PLAIN DOCKER, not only under rootless podman's known uid remapping.
+# That directory is the OPERATOR'S checkout and may hold a captured log
+# committed but never pushed - the one copy of the evidence this whole toolkit
+# exists to carry off a machine nobody can reach - so an operator following
+# the old advice destroyed it.
+#
+# The mismatch is built WITHOUT ROOT, by building the image for a different
+# uid rather than chowning the volume: git refuses in either direction, and
+# needing sudo would make this assertion skippable on exactly the machines
+# most likely to hit the bug. The same technique the --ssh contrast test
+# further down already uses.
+MISMATCH_UID=13345
+MISMATCH_TAG="heliograph-toolkit-test:local-ownermismatch"
+if ! "$RUNTIME" build -f "$DOCKERFILE" -t "$MISMATCH_TAG" \
+     --build-arg "HELIOGRAPH_UID=$MISMATCH_UID" "$DOCKER_DIR" >/dev/null 2>&1; then
+  printf 'skip the ownership-mismatch tests: could not build an image at uid %s here\n' "$MISMATCH_UID"
+else
+  make_transport_repo "$TMP/ownership.git"
+  mkdir -p "$TMP/ownvol"
+  # A uid-MATCHED first run, so the volume genuinely holds a correct checkout
+  # OF THE SAME URL the second run is given. That is what makes the second
+  # run's old diagnosis ("a clone of a different repository") demonstrably
+  # false rather than merely unhelpful.
+  run_entry -v "$TMP/ownership.git:/srv/repo.git" -v "$TMP/ownvol:/home/heliograph/repo" \
+    "$IMAGE" "file:///srv/repo.git" --check
+  assert_eq "the uid-matched first run clones into the volume normally" "0" "$RC"
+  assert_eq "and the volume really is a clone of the very URL the next run is given" \
+    "file:///srv/repo.git" "$(cd "$TMP/ownvol" && git remote get-url origin 2>/dev/null)"
+
+  # The evidence the old advice destroyed: present before, asserted present
+  # after.
+  mkdir -p "$TMP/ownvol/ops-logs"
+  printf 'the only copy of a captured log\n' > "$TMP/ownvol/ops-logs/UNPUSHED_EVIDENCE"
+
+  run_entry -v "$TMP/ownership.git:/srv/repo.git" -v "$TMP/ownvol:/home/heliograph/repo" \
+    "$MISMATCH_TAG" "file:///srv/repo.git" --check
+  assert_eq "a checkout this container's user cannot read is refused, not reused" "1" "$RC"
+  assert_contains "and it is named as an ownership mismatch, not as a different repository" \
+    "The cause is an OWNERSHIP MISMATCH, not a different repository" "$OUT"
+  # BOTH uids, each MEASURED rather than assumed: the directory's real owner
+  # (this test user's own uid, whatever it is on this machine) and the uid the
+  # container genuinely runs as. A message that hardcoded either, or dropped
+  # one side, goes red here on any host.
+  assert_contains "naming the uid that actually owns the directory" \
+    "/home/heliograph/repo is owned by uid $(id -u)" "$OUT"
+  assert_contains "and the uid this container actually runs as" \
+    "this container runs as uid $MISMATCH_UID" "$OUT"
+  # NOT SWALLOWED. git's own stderr was discarded before this fix, which is
+  # what left the entrypoint with nothing to diagnose from.
+  assert_contains "git's own error reaches the operator rather than being discarded" \
+    "dubious ownership" "$OUT"
+  # The claim the old message made, which was false: this directory IS a clone
+  # of the URL this run was given.
+  assert_eq "it never claims the directory holds some other repository" "" \
+    "$(printf '%s' "$OUT" | grep -o 'already holds a clone of')"
+  # THE SAFETY PROPERTY, asserted directly. The old remedy was "empty
+  # /home/heliograph/repo by hand"; nothing on a path that could not identify
+  # the directory may say that again.
+  assert_eq "and it never advises emptying a directory whose contents it could not identify" "" \
+    "$(printf '%s' "$OUT" | grep -o 'empty /home/heliograph/repo by hand')"
+  assert_contains "it says the opposite, explicitly" "DO NOT empty or delete" "$OUT"
+  assert_contains "and gives a remedy that keeps the checkout" \
+    "--build-arg HELIOGRAPH_UID=$(id -u)" "$OUT"
+  assert_eq "the evidence an operator following the old advice would have destroyed survives" \
+    "the only copy of a captured log" "$(cat "$TMP/ownvol/ops-logs/UNPUSHED_EVIDENCE" 2>/dev/null)"
+
+  "$RUNTIME" image rm -f "$MISMATCH_TAG" >/dev/null 2>&1
+fi
+
+# --- the OTHER unidentified shape: a checkout with no origin remote at all ----
+# Same "the read failed" branch, different cause, and no ownership mismatch
+# involved - so it proves the branch is about the READ FAILING rather than
+# about ownership specifically. Under the old code this printed the single
+# most misleading sentence of the three: "already holds a clone of <no origin
+# remote>", a rendered-empty-string presented as a repository name.
+mkdir -p "$TMP/noremote"
+( cd "$TMP/noremote" && git init -q \
+    && printf '#!/usr/bin/env bash\necho NOREMOTE\n' > start.sh && chmod +x start.sh \
+    && $GIT add -A && $GIT commit -qm init ) >/dev/null 2>&1
+run_entry -v "$TMP/noremote:/home/heliograph/repo" "$IMAGE" "file:///srv/repo.git"
+assert_eq "a checkout with no origin remote is refused" "1" "$RC"
+assert_contains "as a directory this run could not identify" \
+  "cannot identify what /home/heliograph/repo holds" "$OUT"
+assert_eq "never as 'a clone of <no origin remote>' - an empty read is not a repository name" "" \
+  "$(printf '%s' "$OUT" | grep -o 'already holds a clone of')"
+assert_contains "git's own reason is shown here too" "No such remote" "$OUT"
+assert_eq "and this path does not advise emptying it either" "" \
+  "$(printf '%s' "$OUT" | grep -o 'by hand')"
+assert_contains "it points at a different, empty location instead" \
+  "Point HELIOGRAPH_WORKDIR at a different, empty location" "$OUT"
 
 # --- a non-empty directory that is not a checkout is refused, not overwritten --
 mkdir -p "$TMP/foreign"
@@ -636,6 +750,54 @@ assert_contains "and it names the flag and the expected shape" \
 # rather than a parser that could reject something valid.
 wrap --print --image "registry.example.invalid:5000/my-team/heliograph:v1.2.3" "https://example.invalid/x.git"
 assert_eq "a well-formed multi-segment reference with a registry port is accepted" "0" "$RC"
+
+# =============================================================================
+#  an option value that looks like a flag - PR 3 whole-PR review, Finding 2
+# =============================================================================
+# `heliograph.sh --image --help` exited 0 HAVING RUN NOTHING. "--help" passes
+# --image's own shape check above (every character in it is one a real image
+# reference is built from), so it became the image name, reached `image
+# inspect --help` - which prints help and exits 0, so the image "existed" and
+# nothing was built - and then reached `run ... --help ...`, where the runtime
+# parsed it as ITS OWN flag, printed usage and exited 0. A clean exit code for
+# a run that never happened is the worst available outcome for a toolkit whose
+# whole point is that a round trip through an operator is expensive.
+#
+# The exit code alone is a real discriminator here (the defect's own exit code
+# was 0), but it is not asserted alone: a DIFFERENT refusal - the shape check
+# above, say - also exits 2, so the message is asserted too, and so is the
+# absence of the runtime's own usage banner, which is the actual symptom.
+wrap --image --help "https://example.invalid/x.git"
+assert_eq "an option value that looks like a flag is refused, not silently run as nothing" \
+  "2" "$RC"
+assert_contains "and it names the flag, the value, and why the value cannot be one" \
+  "--image expects a tag, but got '--help', which begins with a dash" "$OUT"
+# The symptom itself: the runtime's own help text, from a run that did nothing.
+# Both docker's and podman's `run` usage carry this fragment.
+assert_eq "and the runtime's own usage banner never appears - it was never reached" "" \
+  "$(printf '%s' "$OUT" | grep -o 'IMAGE \[COMMAND')"
+
+# Every value-taking wrapper option goes through the same gate, not just the
+# one the finding happened to name. --name is checked separately because it
+# has no shape check of its own at all, so nothing else would catch it.
+wrap --name --detach "https://example.invalid/x.git"
+assert_eq "--name with a flag-shaped value is refused too" "2" "$RC"
+assert_contains "naming that flag and value, not --image's" \
+  "--name expects a container name, but got '--detach'" "$OUT"
+
+# An option with its value simply MISSING (nothing after it at all) still
+# refuses on the empty check, in the same voice - the two are different
+# mistakes and neither may fall through.
+wrap --image
+assert_eq "an option with no value at all still refuses" "2" "$RC"
+assert_contains "in the same voice" "--image requires a tag" "$OUT"
+
+# `--` before the image in the composed command: belt and braces behind the
+# check above, so a dash-leading value arriving by some route it does not
+# cover is still positional to the runtime rather than one of its flags.
+wrap --print --image "$IMAGE" "https://example.invalid/x.git"
+assert_contains "the composed run command ends the runtime's own flag parsing before the image" \
+  "-- $IMAGE" "$OUT"
 
 # --- --dockerfile rejects a path that does not exist (Minor) -------------------
 # Previously reached ensure_image unchecked, so a typo'd path failed only

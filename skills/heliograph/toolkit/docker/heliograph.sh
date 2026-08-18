@@ -208,6 +208,50 @@ print_cmd() {
   printf '\n'
 }
 
+# require_value <flag> <what> <value> - the one gate every wrapper option that
+# takes a value goes through. Refuses an EMPTY value (what each flag used to
+# check for itself, six near-identical copies) and, new here, refuses a value
+# that BEGINS WITH A DASH.
+#
+# The dash rule closes this: `heliograph.sh --image --help` exited 0 having
+# run nothing at all. "--help" passes --image's own shape check further down
+# (every character in it is one a real image reference is built from), so it
+# became the image name, reached `image inspect --help` - which prints help
+# and exits 0, so the image "existed" and nothing was built - and then
+# reached `run ... --help ...`, where the runtime parsed it as ITS OWN flag,
+# printed its usage and exited 0. An operator got a clean exit code and a
+# wall of docker help text for a run that never happened. Any wrapper option
+# value colliding with a real runtime flag does the same.
+#
+# Scoped to THIS WRAPPER'S OWN option values, deliberately, and no further.
+# The repo URL and every start.sh argument stay opaque passthrough - they are
+# entrypoint.sh's to validate, and this file re-implementing any of that is
+# the thing its own header forbids.
+#
+# No legitimate value for any of the six is excluded: a runtime is docker or
+# podman; docker/podman reject a repository or container name that does not
+# begin with an alphanumeric, so neither an --image tag nor a --name can
+# start with a dash; and a genuine path that does can always be written
+# ./-name or absolute, which is what the message says.
+require_value() {
+  local flag="$1" what="$2" value="$3"
+  if [ -z "$value" ]; then
+    echo "heliograph.sh: $flag requires $what." >&2
+    exit 2
+  fi
+  case "$value" in
+    -*)
+      echo "heliograph.sh: $flag expects $what, but got '$value', which begins with a dash" >&2
+      echo "  and reads as another option. Most often that means $flag was typed with its" >&2
+      echo "  value left out and the next option was swallowed as it. Passed through, a" >&2
+      echo "  value like that is parsed by docker/podman as one of THEIR flags, and the" >&2
+      echo "  run exits cleanly having done nothing at all - so it is refused here." >&2
+      echo "  Give $flag its value; a path that genuinely begins with a dash can be" >&2
+      echo "  written ./$value or as an absolute path." >&2
+      exit 2 ;;
+  esac
+}
+
 # --- option parsing ------------------------------------------------------------
 # Wrapper flags only, and only before the first token that is not one of them.
 # That first remaining token - a repo URL, a start.sh flag, or (with REPO_URL
@@ -221,12 +265,12 @@ while [ $# -gt 0 ]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
     --runtime)
-      FORCE_RUNTIME="${2:-}"
-      [ -z "$FORCE_RUNTIME" ] && { echo "--runtime requires docker or podman" >&2; exit 2; }
+      require_value "$1" "docker or podman" "${2:-}"
+      FORCE_RUNTIME="$2"
       shift ;;
     --image)
-      IMAGE="${2:-}"
-      [ -z "$IMAGE" ] && { echo "--image requires a tag" >&2; exit 2; }
+      require_value "$1" "a tag" "${2:-}"
+      IMAGE="$2"
       # Not a full OCI reference parser (registry/repo/tag/digest grammar is
       # more than this wrapper needs to own) - just the shapes an operator
       # actually mistypes: whitespace, and anything outside the character set
@@ -245,8 +289,8 @@ while [ $# -gt 0 ]; do
       esac
       shift ;;
     --dockerfile)
-      DOCKERFILE="${2:-}"
-      [ -z "$DOCKERFILE" ] && { echo "--dockerfile requires a path" >&2; exit 2; }
+      require_value "$1" "a path" "${2:-}"
+      DOCKERFILE="$2"
       if [ ! -e "$DOCKERFILE" ]; then
         echo "heliograph.sh: --dockerfile $DOCKERFILE does not exist." >&2
         exit 1
@@ -256,12 +300,12 @@ while [ $# -gt 0 ]; do
     --no-build) BUILD_MODE="refuse" ;;
     --detach|-d) DETACH=1 ;;
     --name)
-      NAME="${2:-}"
-      [ -z "$NAME" ] && { echo "--name requires a value" >&2; exit 2; }
+      require_value "$1" "a container name" "${2:-}"
+      NAME="$2"
       shift ;;
     --volume)
-      VOLUME_HOST="${2:-}"
-      [ -z "$VOLUME_HOST" ] && { echo "--volume requires a host directory" >&2; exit 2; }
+      require_value "$1" "a host directory" "${2:-}"
+      VOLUME_HOST="$2"
       # --volume takes ONE host path, never a host:target pair - the target is
       # fixed by this script (WORKDIR_CONTAINER, above), never chosen by the
       # caller. Without this, "host:target" is composed straight into
@@ -278,8 +322,8 @@ while [ $# -gt 0 ]; do
       esac
       shift ;;
     --token-file)
-      TOKEN_FILE="${2:-}"
-      [ -z "$TOKEN_FILE" ] && { echo "--token-file requires a path" >&2; exit 2; }
+      require_value "$1" "a path" "${2:-}"
+      TOKEN_FILE="$2"
       shift ;;
     --ssh) FORWARD_SSH=1 ;;
     --print|--dry-run) DRY_RUN=1 ;;
@@ -340,7 +384,17 @@ ensure_image() {
   build_cmd+=("$(dirname "$DOCKERFILE")")
 
   local exists=1
-  "$RUNTIME" image inspect "$tag" >/dev/null 2>&1 && exists=0
+  # `--` before the tag, and before the image in RUN_ARGS below, for the same
+  # reason: belt and braces behind require_value's dash rule. If a value that
+  # begins with a dash ever reaches here again by some route that check does
+  # not cover, `--` makes the runtime treat it as the positional argument it
+  # is rather than as one of its own flags - which is what turned
+  # `--image --help` into a clean exit 0 that ran nothing. Measured on both
+  # runtimes before being relied on, exactly as this file's header demands of
+  # anything it reaches for: `docker image inspect -- <tag>`, `podman image
+  # inspect -- <tag>` and `docker run --rm -- <image> <cmd>` all behave
+  # identically to the same command without it.
+  "$RUNTIME" image inspect -- "$tag" >/dev/null 2>&1 && exists=0
 
   # Reuse silently: already there, and neither --build nor --no-build changes
   # that outcome for an image that already exists.
@@ -456,7 +510,10 @@ else
 fi
 [ -n "$NAME" ] && RUN_ARGS+=(--name "$NAME")
 
-RUN_ARGS+=("$FINAL_IMAGE")
+# `--` ends the runtime's own flag parsing here (see ensure_image's comment):
+# everything from $FINAL_IMAGE onward is positional, which is what CMD_ARGS
+# already relied on implicitly and now does explicitly.
+RUN_ARGS+=(-- "$FINAL_IMAGE")
 RUN_ARGS+=(${CMD_ARGS[@]+"${CMD_ARGS[@]}"})
 
 FULL_CMD=("$RUNTIME" "${RUN_ARGS[@]}")

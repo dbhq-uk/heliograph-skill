@@ -145,6 +145,36 @@ entrypoint_auth_header() {
     "$(printf '%s:%s' "${GIT_TOKEN_USER:-}" "$tok" | base64 -w0)"
 }
 
+# foreign_owners <dir> - prints one "<uid> <path>" line for every path git's
+# own ownership check looks at whose owning uid differs from this process's,
+# and nothing at all when none does.
+#
+# BOTH the working tree and the .git directory, because git refuses on
+# EITHER of them. Measured directly rather than assumed: a checkout whose
+# WORKTREE alone was chowned to another uid, and one whose .GIT alone was,
+# both come back "fatal: detected dubious ownership in repository at ...".
+# Checking only the directory this script was pointed at would therefore
+# have diagnosed the second case as "the owner matches, cause unknown".
+#
+# Deliberately NOT a match against git's message text. That string is git's
+# to change and is translated under a non-English locale, and a diagnosis
+# that only fires for one wording would silently degrade back into the
+# swallowed-and-misdiagnosed shape this whole function exists to end. The
+# uids are a fact this script can measure for itself, and they are also
+# exactly what the operator needs printed.
+foreign_owners() {
+  local dir="$1" me p owner
+  me="$(id -u 2>/dev/null)"
+  [ -z "$me" ] && return 0
+  for p in "$dir" "$dir/.git"; do
+    [ -e "$p" ] || continue
+    owner="$(stat -c %u "$p" 2>/dev/null)"
+    [ -z "$owner" ] && continue
+    [ "$owner" != "$me" ] && printf '%s %s\n' "$owner" "$p"
+  done
+  return 0
+}
+
 # _entrypoint_git_env_ok - mirrors caplib.sh's _cap_git_env_config exactly
 # (the version gate; git_clone_with_header below mirrors cap_git's
 # append-at-next-free-index behaviour too - see its own comment). Duplicated
@@ -234,7 +264,8 @@ USAGE
 }
 
 main() {
-  local url="" existing_url
+  local url="" existing_url remote_rc remote_err errfile owners first_uid
+  local owner_uid owner_path line
 
   # Both set is refused rather than one silently winning. It used to let
   # REPO_URL win and treat every argument as opaque passthrough to start.sh -
@@ -291,14 +322,122 @@ main() {
     # happened against the wrong transport repo. That is precisely the
     # failure this toolkit exists to prevent, so this refuses rather than
     # warns: an operator who only skims scrollback would miss a warning.
-    existing_url="$(git -C "$WORKDIR" remote get-url origin 2>/dev/null)"
+    #
+    # THREE OUTCOMES, kept apart, because they are three different facts:
+    #   1. the read succeeded and the URL matches  -> reuse it (below)
+    #   2. the read succeeded and the URL DIFFERS  -> a genuinely different
+    #      repo. Identified: this script knows what the directory holds.
+    #   3. the read FAILED                         -> UNIDENTIFIED. This
+    #      script knows nothing about what the directory holds.
+    #
+    # 2 and 3 used to be the same branch, and that was wrong in the worst
+    # available direction. `2>/dev/null` swallowed git's own error,
+    # `${existing_url:-<no origin remote>}` then rendered a failed read as a
+    # POSITIVE CLAIM about the directory's contents, and the message went on
+    # to advise emptying it by hand. A bind-mounted checkout owned by a
+    # different uid than this container's user lands exactly there - git
+    # refuses to read a repository it believes belongs to someone else
+    # (CVE-2022-24765, "dubious ownership") - so it was reported as "a clone
+    # of <no origin remote>", i.e. a different repository, and the remedy
+    # offered destroys it. Reproduced under PLAIN DOCKER with a --volume
+    # checkout owned by uid 4242, not only under rootless podman's known
+    # remapping.
+    #
+    # What makes that a data-loss bug rather than a poor message: that
+    # directory is the OPERATOR'S checkout, and it may hold a captured log
+    # committed but not yet pushed - the one copy of the evidence this
+    # toolkit exists to carry off a machine nobody can reach (AGENTS.md
+    # constraint 2, "a failed run still ships, and a failed push never loses
+    # a log"). So the standing rule below, which no future branch here may
+    # break: NOTHING PRINTED BY THIS SCRIPT MAY RECOMMEND EMPTYING OR
+    # DELETING A DIRECTORY WHOSE CONTENTS IT COULD NOT IDENTIFY. If the
+    # remote could not be read, this script does not know the directory is
+    # safe to destroy, and must not imply that it does.
+    #
+    # The refusal itself was right in all three cases and stays. Only the
+    # diagnosis and the remedy change.
+    remote_err=""
+    errfile="$(mktemp 2>/dev/null)"
+    if [ -n "$errfile" ]; then
+      # git's stderr is the EVIDENCE, not noise, so it is captured and
+      # printed rather than discarded - masked, because a remote URL can
+      # appear in it. Kept apart from stdout deliberately: folded together,
+      # an error message would be indistinguishable from the URL itself and
+      # could be compared against $url as though it were one.
+      existing_url="$(git -C "$WORKDIR" remote get-url origin 2>"$errfile")"
+      remote_rc=$?
+      remote_err="$(mask_secrets < "$errfile" 2>/dev/null)"
+      rm -f "$errfile"
+    else
+      existing_url="$(git -C "$WORKDIR" remote get-url origin 2>/dev/null)"
+      remote_rc=$?
+    fi
+
+    # An empty URL with a zero exit counts as UNIDENTIFIED too, not as a
+    # match against an empty string: whatever produced it, it is not an
+    # identification of this directory's contents either.
+    if [ "$remote_rc" -ne 0 ] || [ -z "$existing_url" ]; then
+      owners="$(foreign_owners "$WORKDIR")"
+      echo "entrypoint: cannot identify what $WORKDIR holds - reading its origin remote" >&2
+      echo "  failed (git exited $remote_rc). Refusing to go further rather than guess." >&2
+      if [ -n "$owners" ]; then
+        # Named for what it actually is, with the uid on each side. Note
+        # what this branch does NOT say: it makes no claim about which
+        # repository the directory is a clone of, because the failure that
+        # brought us here is precisely the failure to find that out.
+        echo "  The cause is an OWNERSHIP MISMATCH, not a different repository:" >&2
+        while read -r owner_uid owner_path; do
+          [ -n "$owner_path" ] && echo "    $owner_path is owned by uid $owner_uid" >&2
+        done <<EOWNERS
+$owners
+EOWNERS
+        echo "    this container runs as uid $(id -u) ($(whoami 2>/dev/null || echo 'unknown user'))" >&2
+        echo "  git refuses to read a repository owned by another user (CVE-2022-24765," >&2
+        echo "  \"dubious ownership\"). That is what failed, and it says NOTHING about which" >&2
+        echo "  repository this directory holds - it may well already be a clone of" >&2
+        echo "  $(printf '%s' "$url" | mask_secrets), the URL this run was given." >&2
+      fi
+      if [ -n "$remote_err" ]; then
+        echo "  git said:" >&2
+        while IFS= read -r line; do echo "    $line" >&2; done <<EGITERR
+$remote_err
+EGITERR
+      fi
+      echo "  DO NOT empty or delete $WORKDIR to get past this. Its contents could not be" >&2
+      echo "  identified here, so nothing establishes it is safe to destroy: if an earlier" >&2
+      echo "  run committed a captured log that was never pushed, that checkout holds the" >&2
+      echo "  only copy, and it is the evidence this toolkit exists to carry off a machine" >&2
+      echo "  nobody can log into." >&2
+      if [ -n "$owners" ]; then
+        first_uid="$(printf '%s\n' "$owners" | sed -n '1s/ .*//p')"
+        echo "  Fix the ownership instead, whichever suits the estate:" >&2
+        echo "    - run this container AS that uid: rebuild the image with" >&2
+        echo "      --build-arg HELIOGRAPH_UID=$first_uid, tag it yourself, and run that tag" >&2
+        echo "      (heliograph.sh --image <your-tag>)" >&2
+        echo "    - or give the host directory to uid $(id -u): chown -R $(id -u) <the host path>" >&2
+        echo "    - or, under rootless podman, use --userns=keep-id, which heliograph.sh" >&2
+        echo "      already adds for you when podman is the runtime" >&2
+        echo "  Either way the checkout survives, which is the point." >&2
+      else
+        echo "  Point HELIOGRAPH_WORKDIR at a different, empty location for this run, and" >&2
+        echo "  investigate this directory separately, with its contents intact." >&2
+      fi
+      exit 1
+    fi
+
     if [ "$existing_url" != "$url" ]; then
-      echo "entrypoint: $WORKDIR already holds a clone of $(printf '%s' "${existing_url:-<no origin remote>}" | mask_secrets)," >&2
+      # IDENTIFIED, and genuinely a different repository. Only here - where
+      # this script can say what the directory actually is - is emptying it
+      # mentioned at all, and even then with the caution below, because a
+      # checkout of the WRONG repo can still hold that repo's own unpushed
+      # log.
+      echo "entrypoint: $WORKDIR already holds a clone of $(printf '%s' "$existing_url" | mask_secrets)," >&2
       echo "  but this run was given $(printf '%s' "$url" | mask_secrets) - refusing to reuse it." >&2
       echo "  Reusing a checkout of a different repo would run agent.sh against, and push" >&2
       echo "  captured logs to, the wrong transport repo. Point HELIOGRAPH_WORKDIR at a" >&2
       echo "  different, empty location for this repo, or empty $WORKDIR by hand first if" >&2
-      echo "  reusing it for a new repo is genuinely what you want." >&2
+      echo "  reusing it for a new repo is genuinely what you want - checking first that it" >&2
+      echo "  holds nothing unpushed, because a captured log that never left is lost with it." >&2
       exit 1
     fi
     # PULL, never re-clone: this container has no way to know whether the
