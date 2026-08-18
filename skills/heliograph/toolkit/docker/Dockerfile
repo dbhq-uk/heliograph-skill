@@ -139,5 +139,21 @@ RUN useradd --create-home --uid "${HELIOGRAPH_UID}" --shell /bin/bash heliograph
     && chmod 0440 /etc/sudoers.d/heliograph \
     && visudo -cf /etc/sudoers.d/heliograph
 
+
+# --- the entrypoint --------------------------------------------------------------
+# Copied and made executable while still root, so it works regardless of
+# whatever mode the file carried when it entered the build context (git
+# preserves the executable bit through a clone, but a build context that
+# arrived some other way - `docker build` from a tarball, a CI checkout with
+# core.fileMode off - might not). PR 3 task 2's entrypoint.sh: clone the
+# transport repo the container is given, then hand over to that repo's own
+# start.sh. It owns none of start.sh's job - the preflight, the credential
+# table, the branch checkout, the handover to agent.sh - only the clone that
+# has to happen before start.sh (and caplib.sh with it) exists to be run.
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod 0755 /usr/local/bin/entrypoint.sh
+
 USER heliograph
 WORKDIR /home/heliograph
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
