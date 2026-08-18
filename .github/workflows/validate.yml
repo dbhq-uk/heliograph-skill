@@ -255,12 +255,25 @@ jobs:
             echo "::error::tests/test-container.sh failed (exit $rc)"
             exit 1
           fi
-          # assert.sh's own vocabulary is "ok"/"FAIL" (see tests/assert.sh) -
-          # nothing else in this file's output starts a line with "SKIP", so
-          # this is unambiguously test-container.sh's own loud-skip banner,
-          # not a coincidental match.
+          # TWO GUARDS, because the file can skip at two different scales and
+          # this job's requirement is that neither happens here.
+          #
+          # 1. The whole-file banner: no container runtime at all, printed
+          #    before tests/assert.sh is even sourced. assert.sh's own
+          #    vocabulary is "ok"/"FAIL"/"SKIP", and every skip it prints
+          #    starts a line with "SKIP" too, so this catches both shapes.
           if grep -q '^SKIP' /tmp/test-container.out; then
-            echo "::error::tests/test-container.sh skipped instead of running - no container runtime was found. GitHub-hosted ubuntu-latest runners ship Docker, so this must never happen in CI; investigate the runner rather than ignore this."
+            echo "::error::tests/test-container.sh skipped something instead of running it. GitHub-hosted ubuntu-latest runners ship Docker, podman, ssh-agent and ssh-keygen, so this must never happen in CI; investigate the runner rather than ignore this."
+            exit 1
+          fi
+          # 2. The COUNT, from assert.sh's own summary line, which is the
+          #    guard that does not depend on anyone remembering to make a
+          #    future skip message uppercase. The per-section skips were all
+          #    lowercase until this was written - including the one guarding
+          #    the ownership-mismatch regression - so guard 1 alone proved
+          #    only that the file had not skipped in its entirety.
+          if ! grep -qE '^test-container\.sh: [0-9]+ passed, [0-9]+ failed, 0 skipped$' /tmp/test-container.out; then
+            echo "::error::tests/test-container.sh did not report '0 skipped' (or printed no summary at all). Sections that did not run cannot be treated as sections that passed."
             exit 1
           fi
 

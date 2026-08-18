@@ -208,7 +208,7 @@ if ( env -i HOME="$TMP" PATH="$PATH" \
     "$( cd "$TMP" && env -i HOME="$TMP" PATH="$PATH" \
           bash -c ". \"$TOOLKIT/caplib.sh\"; cap_git config --get http.extraHeader" )"
 else
-  printf 'skip real-git env route: %s is below 2.31\n' "$(git --version)"
+  t_skip "the real-git env route: $(git --version) is below 2.31"
 fi
 
 # --- cap_push's failure text has to work for someone with only this repo -------

@@ -315,7 +315,7 @@ if [ "$(id -u)" != "0" ]; then
     "$(printf '%s' "$OUT" | grep -o a-real-token)"
   chmod 644 "$TMP/unreadable-secret"
 else
-  printf 'skip unreadable GIT_TOKEN_FILE in the preflight: running as root, where mode 000 is still readable\n'
+  t_skip 'the unreadable GIT_TOKEN_FILE preflight test: running as root, where mode 000 is still readable'
 fi
 
 # --- a token embedded in the remote URL is a credential too --------------------

@@ -228,7 +228,7 @@ if [ "$(id -u)" != "0" ]; then
           GIT_TOKEN_FILE="$TMP/unreadable" \
           bash -c ". \"$TOOLKIT/caplib.sh\"; _cap_auth_header" )"
 else
-  printf 'skip unreadable GIT_TOKEN_FILE: running as root, where mode 000 is still readable\n'
+  t_skip 'the unreadable GIT_TOKEN_FILE test: running as root, where mode 000 is still readable'
 fi
 chmod 644 "$TMP/unreadable"
 
