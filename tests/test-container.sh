@@ -493,6 +493,14 @@ assert_eq "and this path does not advise emptying it either" "" \
   "$(printf '%s' "$OUT" | grep -o 'by hand')"
 assert_contains "it points at a different, empty location instead" \
   "Point HELIOGRAPH_WORKDIR at a different, empty location" "$OUT"
+# The refusal is worth nothing if the directory is cleared on the way out, and
+# THIS fixture is the one that can prove it: the container's user owns it, so
+# a `rm -rf $WORKDIR` on this path genuinely would succeed. The ownership
+# fixture above cannot prove the same thing - a uid-mismatched container is
+# refused the delete by the kernel regardless of what the script asks for -
+# which is exactly what a mutation showed by surviving there and dying here.
+assert_eq "and the checkout is still on disk, not cleared to get past the refusal" "yes" \
+  "$([ -d "$TMP/noremote/.git" ] && echo yes || echo no)"
 
 # --- a non-empty directory that is not a checkout is refused, not overwritten --
 mkdir -p "$TMP/foreign"
