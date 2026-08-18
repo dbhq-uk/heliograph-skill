@@ -40,6 +40,19 @@ The GNU spellings are load-bearing (`sed -u` keeps the capture unbuffered, so a
 line is stamped when it is produced). On macOS, `coreutils` and `gnu-sed` must be
 first on `PATH`.
 
+**Or run it in a container**, when installing anything on the control node is
+its own change request:
+
+```bash
+${CLAUDE_SKILL_DIR}/toolkit/docker/heliograph.sh <transport-repo-url>
+```
+
+It builds the image if needed, clones the transport repo, and hands over to
+that repo's own `start.sh` - nothing below this point changes. The
+unprivileged user inside is not a security boundary; the full account,
+including the two ways the image gets built, is in
+[references/container.md](references/container.md).
+
 ## 1. Set up the transport repo
 
 ```bash
@@ -210,3 +223,4 @@ store the far side has. Details, and why each guard is there:
 | [references/transport.md](references/transport.md) | how the control node authenticates to the git host |
 | [references/secrets.md](references/secrets.md) | `secret.sh`, for a value that has to reach the far side |
 | [references/remote-repo.md](references/remote-repo.md) | changing a repo that is also on the far side |
+| [references/container.md](references/container.md) | running the control node in a container: what ships, why, and the honest limits |

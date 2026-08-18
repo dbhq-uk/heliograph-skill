@@ -92,8 +92,10 @@ evidence the loop works is the mistake this section exists to prevent.
 | `skills/heliograph/references/runner.md` | every runner, `cap_*` function and knob |
 | `skills/heliograph/references/transport.md` | how the control node authenticates to the git host |
 | `skills/heliograph/references/remote-repo.md` | changing a repo that is also on the far side |
+| `skills/heliograph/references/container.md` | running the loop in a container, and the honest limits |
 | `skills/heliograph/scripts/bootstrap.sh` | installs the toolkit into a transport repo |
-| `skills/heliograph/toolkit/` | the payload: runners, `lib/`, `steps/`, `TASK.md` |
+| `skills/heliograph/toolkit/` | the payload: runners, `lib/`, `steps/`, `docker/`, `TASK.md` |
+| `skills/heliograph/toolkit/docker/` | the image, the entrypoint that clones, and the `docker run` wrapper |
 
 A new hard-won lesson goes in `references/method.md` with the failure that taught
 it. A new trap in writing steps goes in `references/steps.md`. Keep the rules

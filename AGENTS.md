@@ -19,9 +19,9 @@ Every rule in here was paid for by an investigation that went wrong first.
 ```
 .claude-plugin/plugin.json          # plugin manifest
 skills/heliograph/SKILL.md          # the skill (agent-facing instructions)
-skills/heliograph/references/       # method, runner reference, step-writing, transport, secrets, remote repos
+skills/heliograph/references/       # method, runner reference, step-writing, transport, secrets, remote repos, container
 skills/heliograph/scripts/          # bootstrap.sh - installs the toolkit into a transport repo
-skills/heliograph/toolkit/          # what gets copied out: start.sh, run.sh, agent.sh, caplib.sh, secret.sh, lib/, steps/
+skills/heliograph/toolkit/          # what gets copied out: start.sh, run.sh, agent.sh, caplib.sh, secret.sh, lib/, steps/, docker/
 install.sh / install-codex.sh       # local symlink installers (Claude / Codex)
 tests/                              # plain-bash assertions; run ./tests/run-tests.sh
 ```
@@ -89,6 +89,21 @@ guarantee, so anything a command prints is in that history permanently. Never
 weaken `bootstrap.sh`'s insistence on a fresh target, and never suggest
 bootstrapping into a repo that holds anything else.
 
+**6. The container clones, then gets out of the way; it never re-implements
+`start.sh`.** `entrypoint.sh` (`toolkit/docker/`) does exactly three things:
+resolve the repo URL, clone it or reuse an existing checkout, and `exec
+./start.sh`. Everything past the clone - the preflight, the credential
+table, the branch checkout, the handover to `agent.sh` - stays `start.sh`'s
+alone. It has no `--branch` of its own and no second `git pull` for a reused
+checkout; either would create a second copy of logic that already has one
+authoritative source. The one thing it does own is the credential for that
+single clone, because `caplib.sh` lives inside the repo it is about to
+clone and is not reachable yet - a narrow, documented exception, not a
+precedent for duplicating anything else. The unprivileged user the image
+runs as is not a security boundary either: anyone who can run a command in
+it can `sudo` to root. Full account:
+[`skills/heliograph/references/container.md`](skills/heliograph/references/container.md).
+
 ## Conventions
 
 - Any path a `SKILL.md` names must use `${CLAUDE_SKILL_DIR}` (the skill's own
@@ -125,6 +140,15 @@ probe-truncation greps, both installers, and an end-to-end capture through a
 bootstrapped copy. One difference worth knowing: CI checks the manifest with `jq
 empty` rather than `claude plugin validate .`, which needs the Claude Code CLI, so
 run that separately if you have it.
+
+`./tests/run-tests.sh` includes `tests/test-container.sh`, which needs a
+working `docker` or `podman` locally and **skips loudly rather than
+failing** when neither is reachable - a clean run on a machine with no
+container runtime has not checked anything about the image. CI's own
+`container` job (`.github/workflows/validate.yml`) refuses that silent skip
+and fails if it happens there; a maintainer running the suite locally on a
+box without Docker should not read a green `run-tests.sh` as proof the image
+still builds.
 
 Be honest about what none of it covers: **nothing here exercises a capture against
 a real remote machine.** The behaviour that matters is what a log looks like after

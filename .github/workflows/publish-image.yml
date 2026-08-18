@@ -1,0 +1,181 @@
+name: Publish container image
+
+# =============================================================================
+#  THE TRIGGER: a semver tag (v1.2.3), not every push to main, not a release.
+# =============================================================================
+# Every push to main would turn every ordinary merge into a publish event.
+# A commit that has not even had time for anyone to notice a problem in it
+# becomes the new `latest` pulled by every estate that has ever run
+# `docker pull ghcr.io/.../heliograph-toolkit`, within the few minutes CI
+# takes to run. There is also no good answer to "which version did we run"
+# beyond a commit SHA - a regulated estate's own change record wants a
+# citable version, not "whatever was on main that day" - and `latest` moving
+# on every commit makes "what we pulled on Tuesday" and "what we would pull
+# today" different, unannounced answers to the same question.
+#
+# A GitHub Release is the most deliberate of the three options: it needs an
+# explicit "Publish release" action in the UI, on top of whatever commit it
+# is built from. But in the normal GitHub flow a release still needs a tag
+# to exist first, so gating on the tag push already buys the deliberateness
+# a release adds, without a second manual step layered on top of the first.
+# A maintainer who wants release notes and a changelog can still wrap a tag
+# push in a documented Release later; nothing here forecloses that, and
+# nothing here needs the `release` event's extra permissions or the
+# discussion/notes machinery that comes with it.
+#
+# A pushed tag is a deliberate act distinct from an ordinary commit: someone
+# ran `git tag vX.Y.Z && git push --tags` on purpose. It maps one-to-one onto
+# an exact commit and therefore an exact Dockerfile, and it is the version
+# string a regulated estate can write into its own change record and expect
+# to still mean the same thing months later - "we ran
+# heliograph-toolkit:v1.2.3" is answerable by pulling that tag. The
+# strongest form of that answer is not even the tag - it is the image digest
+# this workflow's own run log records (`docker/build-push-action`'s own
+# `digest` output, visible in the Actions summary for this run), which
+# survives a tag later being force-moved; the tag is what a human writes
+# down, the digest is what actually pins the bytes regardless.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+# Workflow-level default: read-only. The one job that needs to push a
+# package (publish, below) grants itself packages: write explicitly at the
+# job level; nothing else in this file, and nothing else in this repo, has
+# any push permission on the registry at all.
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/heliograph-toolkit
+
+jobs:
+  # THE DRIFT GUARD, applied to publishing itself: a tag that does not
+  # actually build a working image can never reach the registry, because
+  # `publish` below depends on this job (needs: test) succeeding first. This
+  # job carries no packages: write permission at all - it could not push
+  # even if something in it tried to - so the only thing a broken tag can do
+  # here is fail loudly.
+  test:
+    name: Prove the image this tag would publish actually works, before publishing it
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Same property, same reasoning, as validate.yml's own "container" job
+      # (see the comment there) - kept as two small copies of the same six
+      # lines rather than a shared reusable workflow, per this task's own
+      # stated file list of exactly these two workflow files. Keep them in
+      # step by hand if either changes: the property each guards is "the
+      # Dockerfile builds, and tests/test-container.sh's own assertions
+      # genuinely ran rather than silently skipping".
+      - name: Run tests/test-container.sh and refuse a silent skip
+        run: |
+          set +e
+          ./tests/test-container.sh 2>&1 | tee /tmp/test-container.out
+          rc="${PIPESTATUS[0]}"
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::tests/test-container.sh failed (exit $rc) - refusing to publish"
+            exit 1
+          fi
+          # Two guards, matching validate.yml's container job line for line -
+          # see the longer comment there. The banner catches a whole-file
+          # skip (and, since assert.sh's t_skip is uppercase too, a
+          # per-section one); the summary count catches a per-section skip
+          # regardless of how its message happens to be worded later.
+          if grep -q '^SKIP' /tmp/test-container.out; then
+            echo "::error::tests/test-container.sh skipped something instead of running it. Refusing to publish an image whose properties were not actually checked."
+            exit 1
+          fi
+          if ! grep -qE '^test-container\.sh: [0-9]+ passed, [0-9]+ failed, 0 skipped$' /tmp/test-container.out; then
+            echo "::error::tests/test-container.sh did not report '0 skipped' (or printed no summary at all). Refusing to publish on a run where some sections did not execute."
+            exit 1
+          fi
+
+  # =============================================================================
+  #  THE ONLY PATH TO A PUBLISHED IMAGE
+  # =============================================================================
+  # Nothing else in this repo carries packages: write, and this job's own
+  # build step takes no input but this checkout's own Dockerfile, at this
+  # tag's own commit - never a locally built image, never an artifact staged
+  # by any other job or workflow. That is what makes drift structurally
+  # impossible through this path: the published image can only ever be what
+  # `skills/heliograph/toolkit/docker/Dockerfile` produces at the commit the
+  # tag points to, because building that Dockerfile at that commit is the
+  # only thing this job does before it pushes.
+  #
+  # THE HONEST LIMIT: this workflow controls the only path THROUGH GITHUB
+  # ACTIONS to this image name. It cannot by itself stop a maintainer with
+  # their own personal access token and `packages: write` on the same GHCR
+  # namespace from running `docker build && docker push` to the identical
+  # tag by hand, outside this workflow entirely - GITHUB_TOKEN's scoping
+  # limits what THIS RUN can do, not what a human with independent registry
+  # credentials can do. Closing that gap is a registry/organisation
+  # configuration question, not something expressible in this file; see the
+  # task report for exactly what to lock down (GHCR package visibility and
+  # linking the package to this repository so only Actions in this repo can
+  # push to it).
+  publish:
+    name: Build from this tag and push
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tags derived from the pushed git tag itself (v1.2.3, 1.2, latest) and
+      # from the commit (sha-<short-sha>), plus OCI labels that embed the
+      # source repository and the exact commit into the image's own
+      # metadata - so `docker inspect` on a pulled image answers "which
+      # commit built this" even if someone only has the image in hand, no
+      # git history and an image tag that could in principle be re-pointed
+      # later.
+      - name: Derive image tags and OCI labels from this tag and commit
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          #
+          # `latest` IS GATED ON THE ABSENCE OF A PRERELEASE SUFFIX, and the
+          # trigger above is deliberately left wide. `v1.2.3-rc1` matches
+          # 'v*.*.*', so an unconditional `type=raw,value=latest` made a
+          # release candidate the image every estate pulls by default - the
+          # exact "what we pulled on Tuesday is not what we would pull today"
+          # problem the trigger comment above argues against, arriving by a
+          # different door. Narrowing the trigger instead would have stopped
+          # a release candidate being published AT ALL, and publishing one
+          # under its own explicit version is useful; what is not useful is
+          # it silently becoming everyone's default. So the tag still
+          # publishes, and `latest` simply does not move for it.
+          # `contains(github.ref_name, '-')` is the semver rule itself: a
+          # prerelease is exactly the part introduced by the first hyphen,
+          # and a hyphen cannot appear anywhere else in `vMAJOR.MINOR.PATCH`.
+          # The two `type=semver` lines need no such gate - metadata-action
+          # already withholds {{version}}'s unprefixed form and
+          # {{major}}.{{minor}} for a prerelease of its own accord.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+            type=sha,prefix=sha-
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: skills/heliograph/toolkit/docker
+          file: skills/heliograph/toolkit/docker/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

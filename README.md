@@ -143,12 +143,33 @@ reads the logs. What you decide is which question to ask next.
 | `steps/env-snapshot.sh` | control-node baseline: OS, tools, auth, proxy, DNS, git |
 | `steps/net-probe.sh` | DNS, ICMP and a TCP matrix, in both directions |
 | `lib/` | `probe.sh`, `remote.sh` (SSH and Windows), `terraform.sh`, `ansible.sh`, `tfguard.sh` |
+| `docker/` | `Dockerfile`, `entrypoint.sh`, `heliograph.sh` - run the control node in a container instead |
 | `ops-logs/` | the captured runs. Tracked deliberately |
 
 Plus the half that is not code: the method the tooling exists to serve. Measure
 rather than infer, keep a control, run it in all directions, never truncate. See
 [`references/method.md`](skills/heliograph/references/method.md), which is worth
 reading before a hard investigation.
+
+## Running it in a container
+
+For a control node where installing bash, git and coreutils by hand is its
+own change request:
+
+```bash
+skills/heliograph/toolkit/docker/heliograph.sh <transport-repo-url>
+```
+
+It builds the image if it is missing, clones the transport repo, and hands
+over to that repo's own `start.sh` - nothing about the loop itself changes.
+The image ships two ways: on a pushed version tag, so an estate can say
+exactly which one they ran, or built locally from the same `Dockerfile` for
+an estate that will not pull a third-party image. The user inside is
+unprivileged but has passwordless sudo, which is **not a security
+boundary** - see
+[`references/container.md`](skills/heliograph/references/container.md) for
+what it buys instead, and for what has and has not actually been proven
+about the publishing side of this.
 
 ## Logs and secrets
 
