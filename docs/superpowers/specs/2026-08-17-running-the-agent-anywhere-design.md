@@ -193,15 +193,42 @@ create and cheap to delete.
 
 ## PR 3: the container
 
-`debian:bookworm-slim` plus `git`, `ca-certificates` and `bash`. Around 90MB, and
-the GNU userland is already correct. Alpine is smaller but busybox `sed` has no
-`-u`, and installing GNU userland back in spends the size advantage to buy a
-footgun in the one place the toolkit cannot tolerate one.
+`debian:bookworm-slim` plus `git`, `ca-certificates`, `bash` and `sudo`. The base
+image measures 28MB pulled; the finished size is to be **measured and recorded,
+not asserted**. Alpine is smaller but busybox `sed` has no `-u`, and installing a
+GNU userland back in spends the size advantage to buy a footgun in the one place
+the toolkit cannot tolerate one.
 
-Entrypoint is `start.sh`. Root inside the container, so `toolbox.sh` can install:
-that is what the container is for, and the isolation is the point.
-`docker/heliograph.sh` wraps the `docker run` into one line and works with podman
-unchanged.
+Three decisions taken before planning.
+
+**Both distribution paths ship.** The Dockerfile lives in `toolkit/docker/` and
+travels in the transport repo, so an estate that will not pull a third-party
+image can build its own; and an image is published for the estates that would
+rather pull one. The cost is real and has to be managed rather than hoped away: a
+published image can silently drift from the Dockerfile in the repo. Keeping them
+in step is a CI requirement, not a good intention.
+
+**The entrypoint clones.** Give the container a repo URL and a credential and it
+clones fresh, then runs the repo's own `start.sh`. That is what makes the same
+image work in ACI, where there is no host checkout to mount.
+
+**It runs as an unprivileged user with passwordless sudo, not as root.** This
+supersedes the earlier "root inside the container" line, whose justification
+(`toolbox.sh` needing to install) is parked with PR 2 in any case.
+
+Be precise about what that buys, because it is easy to oversell. In a container
+passwordless sudo is functionally equivalent to root: anyone who can run a
+command can become root at will, and it is **not** a security boundary. What it
+buys is that processes are unprivileged unless they ask not to be, that files
+written into a bind-mounted repo belong to the operator rather than to root, and,
+most usefully, that the toolkit's own escalation path is exercised realistically.
+`cap_sudo_precache` and `env-snapshot.sh`'s `sudo -n` probe both degenerate under
+root, so a root container is a worse simulator of the machine it is simulating.
+
+The honest limit: passwordless sudo still does not exercise the case
+`cap_sudo_precache` was actually written for, which is sudo needing a password.
+Neither posture does, and the documentation should say so rather than imply the
+container covers it.
 
 ## PR 4: Azure
 
