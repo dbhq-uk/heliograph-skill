@@ -215,6 +215,7 @@ run_entry() {
 }
 
 TOKEN="heliograph-fixture-token-9f2c8a"
+EXPECTED_HDR_B64="$(printf ':%s' "$TOKEN" | base64 -w0)"
 
 # --- no URL given --------------------------------------------------------------
 run_entry "$IMAGE"
@@ -243,6 +244,21 @@ git clone -q "file://ci-user:$TOKEN@$TMP/leakcheck.git" "$TMP/leakcheck" >/dev/n
 assert_contains "confirmed by hand: an embedded credential DOES reach .git/config unprotected" \
   "$TOKEN" "$(cat "$TMP/leakcheck/.git/config" 2>/dev/null)"
 
+# --- REPO_URL and a positional argument together is refused --------------------
+# This used to let REPO_URL win and treat the positional argument as opaque
+# passthrough to start.sh, so it was NEVER checked by url_has_credential
+# above. `docker run -e REPO_URL=<real url> image <credentialed url>` cloned
+# the real url and handed the credentialed one to start.sh untouched, whose
+# own arg parser echoes an unrecognised option verbatim - the token reaching
+# stdout in full. Refusing outright, before either value is used, closes it.
+run_entry -e "REPO_URL=file:///srv/does-not-need-to-exist-for-this-check.git" \
+  "$IMAGE" "https://ci-user:$TOKEN@example.invalid/x.git"
+assert_eq "REPO_URL plus a positional argument is refused rather than one silently winning" \
+  "2" "$RC"
+assert_contains "and it names the ambiguity" "both REPO_URL and a command-line argument" "$OUT"
+assert_eq "the credential in the ignored positional argument never reaches output either" "" \
+  "$(printf '%s' "$OUT" | grep -o "$TOKEN")"
+
 # --- a URL it cannot reach ------------------------------------------------------
 run_entry "$IMAGE" "https://example.invalid/nope.git"
 assert_eq "an unreachable URL fails rather than hanging" "1" "$RC"
@@ -255,6 +271,33 @@ assert_eq "GIT_TOKEN is never printed, even while cloning fails" "" \
 assert_contains "the MECHANISM is still named, per cap_auth_describe's own discipline" \
   "GIT_TOKEN from the environment" "$OUT"
 assert_contains "and its length, not its value" "(${#TOKEN} chars)" "$OUT"
+
+# --- an unreadable GIT_TOKEN_FILE is named, not denied as "none" ---------------
+# Root-owned, mode 0400 is exactly how Docker and Kubernetes hand a secret
+# mount to a non-root process - the very shape this file's own usage text
+# recommends for keeping a token out of `docker inspect`. Reporting that as
+# a flat "none" denies a variable the operator did set, and on an https
+# remote the clone fails outright before start.sh/cap_auth_describe ever
+# gets a chance to name it more precisely a few seconds later - so this has
+# to be right here, not merely eventually. Skipped under root, where mode
+# 000 is still readable and the state cannot be built (test-start.sh's own
+# equivalent test skips for the same reason).
+if [ "$(id -u)" != "0" ]; then
+  printf '%s\n' "$TOKEN" > "$TMP/unreadable-token"
+  chmod 000 "$TMP/unreadable-token"
+  run_entry -e GIT_TOKEN_FILE=/run/secrets/git-token \
+    -v "$TMP/unreadable-token:/run/secrets/git-token:ro" \
+    "$IMAGE" "https://example.invalid/x.git"
+  assert_eq "an unreadable token file's contents are still never printed" "" \
+    "$(printf '%s' "$OUT" | grep -o "$TOKEN")"
+  assert_contains "and it names the path and the permissions problem" \
+    "/run/secrets/git-token exists but is not readable" "$OUT"
+  assert_eq "rather than flatly denying a variable the operator did set" "" \
+    "$(printf '%s' "$OUT" | grep -o 'credential: none')"
+  chmod 644 "$TMP/unreadable-token"
+else
+  printf 'skip unreadable GIT_TOKEN_FILE test: running as root, where mode 000 is still readable\n'
+fi
 
 # --- the happy path: clone, then genuinely hand over to start.sh ---------------
 make_transport_repo "$TMP/happy.git"
@@ -296,6 +339,27 @@ assert_contains "and it says it reused the checkout rather than re-cloning" \
 assert_eq "the marker a re-clone would have destroyed survives" \
   "yes" "$([ -f "$TMP/vol/UNCOMMITTED_MARKER" ] && echo yes || echo no)"
 
+# --- a restart against a DIFFERENT repo on the same volume is refused ----------
+# Reproduced exactly as reported: two real repos, one volume. Without this
+# check, run 2 against beta.git still had alpha checked out and alpha as its
+# remote, and everything start.sh/agent.sh do next - including pushing
+# captured logs - happened against the wrong transport repo. Refused, not
+# merely warned: an operator skimming scrollback would miss a warning.
+make_transport_repo "$TMP/alpha.git"
+make_transport_repo "$TMP/beta.git"
+mkdir -p "$TMP/mismatchvol"
+run_entry -v "$TMP/alpha.git:/srv/alpha.git" -v "$TMP/mismatchvol:/home/heliograph/repo" \
+  "$IMAGE" "file:///srv/alpha.git" --check
+assert_eq "first run clones alpha and passes --check" "0" "$RC"
+run_entry -v "$TMP/beta.git:/srv/beta.git" -v "$TMP/mismatchvol:/home/heliograph/repo" \
+  "$IMAGE" "file:///srv/beta.git" --check
+assert_eq "a restart against a different repo on the same volume is refused" "1" "$RC"
+assert_contains "and it names the repo the volume actually holds" \
+  "already holds a clone of file:///srv/alpha.git" "$OUT"
+assert_contains "and the one this run was given" "file:///srv/beta.git" "$OUT"
+assert_eq "the old checkout's remote is left exactly as it was, not silently repointed" \
+  "file:///srv/alpha.git" "$(cd "$TMP/mismatchvol" && git remote get-url origin 2>/dev/null)"
+
 # --- a non-empty directory that is not a checkout is refused, not overwritten --
 mkdir -p "$TMP/foreign"
 echo "not a git repo" > "$TMP/foreign/unrelated-file.txt"
@@ -321,7 +385,18 @@ assert_contains "the remote stays the plain URL that was given" \
 # leak vector's reality being confirmed, not a defect in entrypoint.sh - there
 # is nothing a script running INSIDE the container can do about what the
 # daemon records about how it was started.
+# The container is never run, only created - `docker create` alone is enough
+# to populate Config.Env, and running it would add nothing this assertion
+# needs. That means, unlike every other assertion in this file, NOTHING in
+# entrypoint.sh's own logic can turn either check below red - so both guard
+# explicitly against `docker create` itself failing (cid empty, "$RUNTIME
+# inspect ''" would print nothing and a plain absence check would pass
+# vacuously) and assert something POSITIVE first, so each has an observable
+# subject rather than resting entirely on an absence that a broken create
+# would satisfy for free.
 cid="$("$RUNTIME" create -e "GIT_TOKEN=$TOKEN" "$IMAGE" "https://example.invalid/x.git" 2>/dev/null)"
+assert_eq "docker create for the -e GIT_TOKEN case actually produced a container id" "" \
+  "$([ -z "$cid" ] && echo EMPTY-CID)"
 assert_contains "confirmed: -e is visible in docker inspect (a Docker property, not this script's)" \
   "$TOKEN" "$("$RUNTIME" inspect "$cid" 2>/dev/null)"
 "$RUNTIME" rm -f "$cid" >/dev/null 2>&1
@@ -333,8 +408,13 @@ printf '%s\n' "$TOKEN" > "$TMP/token-file"
 cid="$("$RUNTIME" create -e GIT_TOKEN_FILE=/run/secrets/git-token \
         -v "$TMP/token-file:/run/secrets/git-token:ro" \
         "$IMAGE" "https://example.invalid/x.git" 2>/dev/null)"
+assert_eq "docker create for the GIT_TOKEN_FILE case actually produced a container id" "" \
+  "$([ -z "$cid" ] && echo EMPTY-CID)"
+inspect_out="$("$RUNTIME" inspect "$cid" 2>/dev/null)"
+assert_contains "docker inspect really did capture this container's config (subject is observable)" \
+  "/run/secrets/git-token" "$inspect_out"
 assert_eq "GIT_TOKEN_FILE keeps the token itself out of docker inspect" "" \
-  "$("$RUNTIME" inspect "$cid" 2>/dev/null | grep -o "$TOKEN")"
+  "$(printf '%s' "$inspect_out" | grep -o "$TOKEN")"
 "$RUNTIME" rm -f "$cid" >/dev/null 2>&1
 
 # --- the process table: the header travels via env, never argv -----------------
@@ -343,15 +423,38 @@ assert_eq "GIT_TOKEN_FILE keeps the token itself out of docker inspect" "" \
 # tests prove the same property for cap_git the same way, by making the fake
 # git self-report rather than racing a real process's lifetime), then execs
 # the real git so the clone genuinely completes against the bind-mounted bare
-# repo.
+# repo. Reports KEY_1/VALUE_1 too (Finding 2, the ambient-config test below)
+# and GIT_TERMINAL_PROMPT (the never-prompt fix).
+#
+# fakegit_clone_block <report-file> - every git invocation inside a run gets
+# logged (start.sh's own cap_git calls ls-remote and push --dry-run too, and
+# both share this same PATH once it is exec'd into), and the very first
+# version of this file's argv/header assertions grepped the WHOLE report -
+# which is exactly why they could not fail: neutering entrypoint_auth_header
+# so the CLONE goes out with no credential at all left every assertion here
+# green, because cap_git's OWN later ls-remote/push calls (a completely
+# different property, already test-capgit.sh's) still carried the header and
+# satisfied the grep. Anchored to the block that starts at the line whose
+# ARGV begins "clone " and ends at its own GIT_CONFIG report line, so these
+# assertions can only be satisfied by the CLONE's own invocation.
+fakegit_clone_block() {
+  awk '
+    /^ARGV: clone / { capture=1 }
+    capture { print }
+    capture && /^GIT_CONFIG_COUNT=/ { capture=0 }
+  ' "$1"
+}
+
 mkdir -p "$TMP/fakebin" "$TMP/report"
 cat > "$TMP/fakebin/git" <<'EOF'
 #!/bin/sh
 {
   printf 'ARGV: %s\n' "$*"
   printf 'CMDLINE: '; tr '\0' ' ' < /proc/self/cmdline; printf '\n'
-  printf 'GIT_CONFIG_COUNT=%s GIT_CONFIG_KEY_0=%s GIT_CONFIG_VALUE_0=%s\n' \
-    "${GIT_CONFIG_COUNT:-unset}" "${GIT_CONFIG_KEY_0:-unset}" "${GIT_CONFIG_VALUE_0:-unset}"
+  printf 'GIT_TERMINAL_PROMPT=%s\n' "${GIT_TERMINAL_PROMPT:-unset}"
+  printf 'GIT_CONFIG_COUNT=%s GIT_CONFIG_KEY_0=%s GIT_CONFIG_VALUE_0=%s GIT_CONFIG_KEY_1=%s GIT_CONFIG_VALUE_1=%s\n' \
+    "${GIT_CONFIG_COUNT:-unset}" "${GIT_CONFIG_KEY_0:-unset}" "${GIT_CONFIG_VALUE_0:-unset}" \
+    "${GIT_CONFIG_KEY_1:-unset}" "${GIT_CONFIG_VALUE_1:-unset}"
 } >> /report/log 2>&1
 exec /usr/bin/git "$@"
 EOF
@@ -361,13 +464,15 @@ run_entry -e "GIT_TOKEN=$TOKEN" -e "PATH=/fakebin:/usr/bin:/bin" \
   -v "$TMP/fakebin:/fakebin:ro" -v "$TMP/report:/report" \
   -v "$TMP/argv.git:/srv/repo.git" "$IMAGE" "file:///srv/repo.git" --check
 assert_eq "the clone under the fake git still succeeds" "0" "$RC"
-report="$(cat "$TMP/report/log" 2>/dev/null)"
-assert_contains "the fake git really was invoked for the clone (subject is observable)" \
-  "clone" "$report"
-assert_eq "the token never reaches argv" "" \
-  "$(printf '%s\n' "$report" | grep '^ARGV:' | grep -o "$TOKEN")"
+clone_block="$(fakegit_clone_block "$TMP/report/log")"
+assert_contains "the CLONE's own invocation was captured (subject is observable)" \
+  "clone" "$clone_block"
+assert_eq "the token never reaches the CLONE's argv" "" \
+  "$(printf '%s\n' "$clone_block" | grep '^ARGV:' | grep -o "$TOKEN")"
 assert_eq "nor /proc/self/cmdline of the git process that did the cloning" "" \
-  "$(printf '%s\n' "$report" | grep '^CMDLINE:' | grep -o "$TOKEN")"
+  "$(printf '%s\n' "$clone_block" | grep '^CMDLINE:' | grep -o "$TOKEN")"
+assert_eq "GIT_TERMINAL_PROMPT=0 reaches the clone, so an auth prompt cannot hang it" \
+  "GIT_TERMINAL_PROMPT=0" "$(printf '%s\n' "$clone_block" | grep '^GIT_TERMINAL_PROMPT=')"
 # The property is "no auth header reaches argv AT ALL", not just "the raw
 # token substring is absent" - test-capgit.sh's own comment names this
 # exactly: base64(":$TOKEN") never contains the plaintext token even when
@@ -378,10 +483,49 @@ assert_eq "nor /proc/self/cmdline of the git process that did the cloning" "" \
 # GREEN (the base64 blob it puts in argv never contains "9f2c8a" et al.
 # verbatim) while this one goes red. Assert on the marker that WOULD be in
 # argv under that regression instead, exactly as test-capgit.sh does.
-assert_eq "and no -c http.extraHeader reaches argv either (base64 is not secrecy)" "" \
-  "$(printf '%s\n' "$report" | grep '^ARGV:' | grep -o extraHeader)"
-EXPECTED_HDR_B64="$(printf ':%s' "$TOKEN" | base64 -w0)"
-assert_contains "the header DOES travel, through GIT_CONFIG_VALUE_0 (env, mode 400), not argv" \
-  "GIT_CONFIG_VALUE_0=Authorization: Basic $EXPECTED_HDR_B64" "$report"
+assert_eq "and no -c http.extraHeader reaches the CLONE's argv either (base64 is not secrecy)" "" \
+  "$(printf '%s\n' "$clone_block" | grep '^ARGV:' | grep -o extraHeader)"
+assert_contains "the CLONE's own invocation carries the header, through GIT_CONFIG_VALUE_0 (env, mode 400), not argv" \
+  "GIT_CONFIG_VALUE_0=Authorization: Basic $EXPECTED_HDR_B64" "$clone_block"
+
+# --- an ambient GIT_CONFIG_* survives: append, never overwrite -----------------
+# This used to hard-code GIT_CONFIG_COUNT=1/KEY_0/VALUE_0 for the clone,
+# which is the exact mistake cap_git's own append-at-next-free-index logic
+# exists to avoid: an operator on a locked-down estate may already inject
+# their own GIT_CONFIG_COUNT/KEY_0/VALUE_0 into this container's environment
+# (an ambient http.proxy, sslCAInfo, safe.directory). Slot 0 silently
+# overwrote and truncated it off the list - and only on the AUTHENTICATED
+# path, since the header-less branch never touches GIT_CONFIG_* at all, so
+# the failure appeared only once a token was added, on the one path that is
+# actually deployed.
+mkdir -p "$TMP/report2"
+make_transport_repo "$TMP/ambient.git"
+run_entry -e "GIT_TOKEN=$TOKEN" -e "PATH=/fakebin:/usr/bin:/bin" \
+  -e "GIT_CONFIG_COUNT=1" -e "GIT_CONFIG_KEY_0=http.proxy" -e "GIT_CONFIG_VALUE_0=http://corp:3128" \
+  -v "$TMP/fakebin:/fakebin:ro" -v "$TMP/report2:/report" \
+  -v "$TMP/ambient.git:/srv/repo.git" "$IMAGE" "file:///srv/repo.git" --check
+assert_eq "the clone still succeeds with an ambient GIT_CONFIG_* already set" "0" "$RC"
+ambient_block="$(fakegit_clone_block "$TMP/report2/log")"
+assert_contains "the operator's own ambient config survives at slot 0, COUNT becomes 2 not reset to 1" \
+  "GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=http.proxy GIT_CONFIG_VALUE_0=http://corp:3128" "$ambient_block"
+assert_contains "and this clone's own header is appended at slot 1, not overwriting slot 0" \
+  "GIT_CONFIG_KEY_1=http.extraHeader GIT_CONFIG_VALUE_1=Authorization: Basic $EXPECTED_HDR_B64" "$ambient_block"
+
+# --- a clone that succeeds but is not a transport repo cleans up after itself --
+# Without this, the NEXT run of the same container against the same volume
+# lands in the "not a heliograph checkout" refusal instead of retrying the
+# clone - a less accurate diagnosis of what actually happened.
+mkdir -p "$TMP/nostartsh.work"
+printf 'not a transport repo\n' > "$TMP/nostartsh.work/README.md"
+git init -q --bare "$TMP/nostartsh.git"
+( cd "$TMP/nostartsh.work" && git init -q && git remote add origin "$TMP/nostartsh.git" \
+    && $GIT add -A && $GIT commit -qm init && $GIT push -q -u origin HEAD ) >/dev/null 2>&1
+mkdir -p "$TMP/nostartshvol"
+run_entry -v "$TMP/nostartsh.git:/srv/repo.git" -v "$TMP/nostartshvol:/home/heliograph/repo" \
+  "$IMAGE" "file:///srv/repo.git"
+assert_eq "a clone with no start.sh fails" "1" "$RC"
+assert_contains "and names the problem" "no executable" "$OUT"
+assert_eq "and it does not leave the partial checkout behind" "" \
+  "$(ls -A "$TMP/nostartshvol" 2>/dev/null)"
 
 t_summary
