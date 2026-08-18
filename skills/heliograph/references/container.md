@@ -146,6 +146,18 @@ this container exactly as it is on a bare control node - the same reason
 way out would not help: the leak into `/proc/<pid>/cmdline` has already
 happened by the time anything gets printed.
 
+**And the refusal comes too late to be the whole story, which it now says.**
+By the time `entrypoint.sh` sees that URL it has been through several places
+the container cannot reach back into: the shell that composed it, and that
+shell's history; the *host's* process table while `docker run` parsed its own
+command line; and `docker inspect`'s `.Config.Cmd`, which records it for as
+long as the container exists and is readable by anyone who can talk to the
+daemon. So the message says to **rotate the credential**, not merely to pass
+it a safer way next time. The wrapper applies the same refusal *before* it
+composes the runtime's command line, which is the only place the host-side
+half of that exposure can still be prevented; `git@host` on an `ssh://` URL is
+a username rather than a secret and is refused by neither.
+
 ### The credential for this one clone
 
 Before the clone, `caplib.sh` - and with it `cap_git`, the one place this
@@ -166,7 +178,12 @@ The precedence, first match wins:
 
 Same names, same order as `caplib.sh`'s own token resolution - narrower only
 in that there is no `./.git-token` fallback, because there is no repo yet to
-hold one. The header reaches `git clone` through the environment
+hold one. A `GIT_TOKEN_FILE` that is readable but yields nothing - a
+*directory* (`GIT_TOKEN_FILE=/run/secrets`, the mount point rather than the
+file inside it, is the realistic mistake) or a file whose first line is empty
+- is reported as "unreadable or its first line is empty, so no header is
+sent", `caplib.sh`'s own wording for the same state. Never "(0 chars)": that
+would say the token is in force at the moment `git` is running with none. The header reaches `git clone` through the environment
 (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_N`/`GIT_CONFIG_VALUE_N`, appended at the
 next free index rather than a hard-coded slot, so an operator's own ambient
 git config survives alongside it), never through `-c` on argv and never
@@ -182,6 +199,15 @@ inside the container. `GIT_TOKEN_FILE` naming a bind- or secret-mounted file
 is the mitigation: only the path appears in `inspect` output, never the
 value, and the wrapper's `--token-file` makes that the path of least
 resistance rather than something an operator has to assemble by hand.
+
+**The entrypoint's own progress lines carry a UTC time.** Everything after
+the handover is stamped already (`run.sh`'s capture, `agent.sh`'s loop), but
+nothing before `start.sh` was, and the gap the entrypoint owns is the clone:
+on a large repo over a slow link, `docker logs` showed "cloning ..." and then
+silence, which reads exactly like a hang. Two lines minutes apart settle it
+from the log alone. `docker logs -t` stamps every line including `git`'s own
+progress output, and is worth reaching for when a clone is the thing under
+suspicion.
 
 **`GIT_TERMINAL_PROMPT=0` is set and exported**, because a clone that blocks
 on a username prompt is exactly the hang the toolkit's no-prompt rule exists
@@ -212,6 +238,16 @@ what the directory holds. All three refuse-or-reuse correctly, but only the
 middle one may be described as "a clone of something else". The third is
 reported as **unidentified**, with `git`'s own error quoted rather than
 discarded.
+
+A directory that cannot be **read or traversed at all** lands in the third
+outcome too, and by a check made before anything else is inferred from its
+contents. `[ -e "$WORKDIR/.git" ]`, `[ -x "$WORKDIR/start.sh" ]` and `ls -A`
+all answer "no" and "empty" identically when the real answer is *permission
+denied*, so a mode-`0700` checkout owned by another uid used to fall through
+every branch to the clone, where `git`'s own accurate error was then
+contradicted by a message blaming the URL or the credential. It is exactly
+the shape the ownership diagnosis below exists for, and it was the one shape
+that never reached it.
 
 The commonest cause of the third is an **ownership mismatch**: `git` refuses
 to read a repository owned by a different uid than the process reading it
@@ -260,11 +296,30 @@ workflow's own run log records the image digest, which survives a tag later
 being force-moved even though the tag itself is not immutable by
 construction.
 
+`latest` moves only for a tag with **no prerelease suffix**. `v1.2.3-rc1`
+matches the `v*.*.*` trigger and is published under its own version, which is
+useful; making it the image every estate pulls by default is not, and an
+unconditional `latest` did exactly that. The trigger is left wide and the
+`latest` tag is gated instead, so a release candidate ships without becoming
+everybody's default.
+
 **Build it yourself, from the same `Dockerfile`** this repo ships at
 `skills/heliograph/toolkit/docker/Dockerfile` - the alternative for an
 estate that will not pull a third-party image regardless of where it is
 published. Nothing about the toolkit depends on which of the two produced
 the image in front of you.
+
+**The wrapper keeps those two paths apart, rather than blurring them.**
+`heliograph.sh --image ghcr.io/org/heliograph-toolkit:v9.9.9` used to *build*
+the local `Dockerfile` and tag the result with the published name - drift
+reintroduced at the consumer end, in the one place nobody would look for it,
+undoing the whole "the image at a tag can only be what that tag's commit
+builds" argument above. A reference whose first segment looks like a registry
+host (it contains a dot or a colon, or is `localhost`) is therefore **pulled**;
+a pull that fails is a refusal, never a quiet fall back to building. `--build`
+still builds such a tag, because that is an instruction rather than a guess,
+and says what it is doing. `--ssh`'s derived `<image>-uid<N>` tag is the one
+exception: no registry publishes it, so it is built locally and announced.
 
 **Say plainly: the GitHub Actions side of this has never actually run.** The
 GHCR login and push, the runner's Docker availability, and the tag-trigger
@@ -288,9 +343,11 @@ heliograph.sh [options] <repo-url> [-- start.sh args...]
 | flag | does |
 |---|---|
 | `--detach`, `-d` | run detached and return; the default is foreground |
-| `--volume HOSTDIR` | bind-mount `HOSTDIR` onto the checkout, so a restart reuses it instead of re-cloning |
-| `--token-file PATH` | bind-mount `PATH` read-only and set `GIT_TOKEN_FILE` to it |
+| `--volume HOSTDIR` | bind-mount `HOSTDIR` (**absolute path**) onto the checkout, so a restart reuses it instead of re-cloning - and so an unpushed log is already on the host |
+| `--token-file PATH` | bind-mount `PATH` (**absolute path**) read-only and set `GIT_TOKEN_FILE` to it |
 | `--ssh` | forward `$SSH_AUTH_SOCK`; build or reuse a uid-matched image |
+| `--name NAME` | name the container; **defaulted** when not given |
+| `--rm` | remove the container on exit even with no `--volume`, accepting the loss |
 | `--print`, `--dry-run` | print the command instead of running it |
 | `--build` / `--no-build` | force a rebuild, or refuse to build at all |
 | `--runtime docker\|podman` | force a runtime instead of auto-detecting |
@@ -300,17 +357,60 @@ credential, an unreachable URL, a branch that does not exist - happen inside
 the preflight, in the first few seconds, and a detached container that fails
 at startup is invisible until an operator thinks to run `docker logs`.
 `--detach` opts into the background shape once a run is known to be healthy.
-Only the foreground shape gets `--rm`: a detached container that exits
-unexpectedly is exactly the case an operator needs `docker logs` on
-afterwards, and `--rm` would already have discarded it.
 
-**No mounts by default.** A plain run produces a container whose mount list
-is empty. `--volume` exists because `ops-logs/` already has an escape
-mechanism unrelated to this wrapper - `run.sh` commits and pushes it, so a
-container removed on exit loses nothing that matters. `--volume` persists
-the *whole* checkout across a restart, reusing `entrypoint.sh`'s already-
-tested reuse/pull behaviour rather than inventing a narrower mechanism for
-one subdirectory of it.
+**The container is kept on exit unless the checkout survives somewhere else.**
+This is the correction of a real defect, so it is worth stating plainly rather
+than as a preference. `--rm` used to be added to every foreground run, on the
+reasoning that a removed container "loses nothing that matters, because what
+matters already left over git". That traces only the success path. `cap_push`
+exists for the other one: when the push cannot be made it commits the log
+locally and prints *"PUSH FAILED - run `git push` manually. The file is
+committed locally: `<path>`"*. With no `--volume`, that path is inside the
+container, `--rm` deleted it the instant the process exited, and the printed
+remedy named a checkout that no longer existed. The triggers are ordinary:
+`--once`, `stop: yes`, Ctrl-C on the very first foreground run this document
+recommends, `docker stop`, a reboot. Under constraint 2 - *a failed run still
+ships, and a failed push never loses a log* - that is data loss, not untidiness.
+
+So `--rm` is added only when the checkout is not the only copy:
+
+- **`--volume HOSTDIR` given** (foreground): the checkout, including anything
+  committed and not pushed, is on the host already, so the container goes.
+- **`--rm` given explicitly**: the operator has said so, and the wrapper says
+  back, before the run, what that costs.
+- **otherwise the container is kept.** `--name` is defaulted (UTC stamp plus
+  pid) so the wrapper can print, *before* the run starts, the exact command
+  that recovers a log from it:
+
+```
+docker cp <name>:/home/heliograph/repo/ops-logs/ .
+docker rm <name>          # once the log is somewhere safe
+```
+
+A detached container is kept regardless, as before - it is the case that most
+needs `docker logs` afterwards.
+
+**No mounts by default.** A plain run produces a container whose mount list is
+empty. `--volume` persists the *whole* checkout across a restart, reusing
+`entrypoint.sh`'s already-tested reuse/pull behaviour rather than inventing a
+narrower mechanism for `ops-logs/` alone - and, since the fix above, it is
+also the flag that puts a failed run's log on the host without a `cp`.
+
+**Both mount flags require an absolute path.** `docker` and `podman` read a
+bind-mount source that does not begin with `/` as a **named volume**, and
+create it empty rather than refusing: `--token-file mytoken` mounted a new,
+empty volume where the credential should have been (an unauthenticated clone,
+and a credential line reporting an unreadable file), and `--volume somedir`
+silently used something other than the directory the operator meant, so the
+persistence promised in the row above did not hold. Both are refused by name.
+
+**`REPO_URL` is not forwarded when a URL is also typed.** Every one of
+`REPO_URL`, `GIT_TOKEN`, `GIT_AUTH_HEADER` and `GIT_TOKEN_USER` is forwarded
+by bare name if it is exported - but `entrypoint.sh` refuses `REPO_URL` and a
+positional argument together, so forwarding it regardless made a plain
+`heliograph.sh <url>` die on a refusal naming a variable the operator had not
+typed, telling them to "drop `REPO_URL`" when the wrapper had added it. The
+typed URL wins, and a line on stderr says `REPO_URL` was left behind.
 
 **Credential values never reach the wrapper's own command line.**
 `REPO_URL`, `GIT_TOKEN`, `GIT_AUTH_HEADER` and `GIT_TOKEN_USER`, if already
