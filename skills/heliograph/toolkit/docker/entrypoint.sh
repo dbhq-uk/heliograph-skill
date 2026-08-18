@@ -39,7 +39,11 @@
 #  moved the auth header out of argv for the same reason. Putting the
 #  credential in the URL is the obvious route and it is the one that leaks;
 #  see references/container.md for the full account and the honest limits of
-#  what is closed here versus what Docker itself still exposes.
+#  what is closed here versus what Docker itself still exposes. The refusal
+#  also says the part this container cannot do anything about: a URL that got
+#  here on a `docker run` command line has already been in the HOST's process
+#  table and in `docker inspect .Config.Cmd`, so the credential in it is
+#  spent and has to be rotated, not merely re-passed a safer way.
 # =============================================================================
 set -uo pipefail
 
@@ -60,6 +64,16 @@ export GIT_TERMINAL_PROMPT=0
 # editing this file; $HOME rather than a hard-coded /home/heliograph so a
 # rebuild with a different HELIOGRAPH_UID/username still resolves correctly.
 WORKDIR="${HELIOGRAPH_WORKDIR:-$HOME/repo}"
+
+# stamp - a UTC time for this script's own progress lines. Everything after
+# the handover is stamped already (run.sh's capture, agent.sh's loop), but
+# nothing printed BEFORE start.sh was, and the gap this script owns is the
+# clone: on a large repo over a slow link, `docker logs` showed "cloning ..."
+# and then silence, indistinguishable from a hang. Two lines with times
+# minutes apart settle that from the log alone, without the reader having to
+# know to pass `docker logs -t`. Only the progress lines carry it; a refusal
+# is read after the fact and reads better without one.
+stamp() { date -u +%H:%M:%SZ 2>/dev/null; }
 
 # --- masking, for what THIS script prints directly ---------------------------
 # cap_redact cannot help here for the same reason start.sh's own credential()
@@ -113,13 +127,34 @@ entrypoint_credential_desc() {
     printf 'GIT_TOKEN from the environment (%s chars)' "${#GIT_TOKEN}"
   elif [ -n "${GIT_TOKEN_FILE:-}" ] && [ -r "${GIT_TOKEN_FILE}" ]; then
     tok="$(sed -n '1p' "$GIT_TOKEN_FILE" 2>/dev/null)"
-    printf '%s (%s chars)' "$GIT_TOKEN_FILE" "${#tok}"
+    # caplib.sh's cap_auth_describe wording, copied deliberately rather than
+    # paraphrased, because the defect it documents having fixed was reachable
+    # here too: reporting "(0 chars)" tells an operator the token IS in force
+    # when entrypoint_auth_header below sends no header at all - the exact
+    # disagreement that function exists to prevent. `[ -r ]` is true for a
+    # DIRECTORY, and GIT_TOKEN_FILE=/run/secrets (the secrets mount point
+    # rather than the file inside it) is the realistic mistake: sed then reads
+    # nothing, the clone goes out unauthenticated, and the one line printed
+    # about the credential says it is there. All three causes - a directory,
+    # an empty first line, an unreadable-but-listed file - are
+    # indistinguishable from here, and the operator's next move is the same
+    # for all three: look at the path.
+    if [ -z "$tok" ]; then
+      printf '%s is unreadable or its first line is empty, so no header is sent' "$GIT_TOKEN_FILE"
+    else
+      printf '%s (%s chars)' "$GIT_TOKEN_FILE" "${#tok}"
+    fi
   elif [ -n "${GIT_TOKEN_FILE:-}" ] && [ -e "${GIT_TOKEN_FILE}" ]; then
     printf '%s exists but is not readable by %s, so no credential is attached to this clone. Fix its permissions, or run the container as a user that can read it' \
       "$GIT_TOKEN_FILE" "$(whoami 2>/dev/null || echo 'this user')"
   elif [ -r "$HOME/.git-token" ]; then
+    # Same rule, same wording, for the same reason as the branch above.
     tok="$(sed -n '1p' "$HOME/.git-token" 2>/dev/null)"
-    printf '%s (%s chars)' "$HOME/.git-token" "${#tok}"
+    if [ -z "$tok" ]; then
+      printf '%s is unreadable or its first line is empty, so no header is sent' "$HOME/.git-token"
+    else
+      printf '%s (%s chars)' "$HOME/.git-token" "${#tok}"
+    fi
   else
     printf 'none (relying on a forwarded ssh-agent key, or a public repository)'
   fi
@@ -239,6 +274,99 @@ git_clone_with_header() {
   fi
 }
 
+# workdir_is_empty - true only when $WORKDIR could genuinely be LISTED and
+# held nothing. `[ -n "$(ls -A "$WORKDIR" 2>/dev/null)" ]` conflated two
+# different answers: an empty directory, and a directory this process is not
+# allowed to list, which returns the same empty string with a non-zero exit
+# nobody looked at. The guard in main() catches the ordinary shape of that
+# (a directory with no read or execute bit for this user) before anything gets
+# here; this checks ls's own status as well, because a listing can fail for
+# reasons a permission bit does not describe, and "it failed" must never be
+# read as "it is empty" - the difference between refusing and cloning over
+# somebody's checkout.
+workdir_is_empty() {
+  local url_given="${1:-}" listing rc
+  listing="$(ls -A "$WORKDIR" 2>/dev/null)"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    refuse_unidentified \
+      "listing it failed (ls exited $rc), so whether it is empty cannot be established." \
+      "" "$url_given"
+  fi
+  [ -z "$listing" ]
+}
+
+# refuse_unidentified <why> <git-stderr-or-empty> <url-this-run-was-given>
+# ---------------------------------------------------------------------------
+# THE UNIDENTIFIED OUTCOME, in one place, because there is now more than one
+# way to reach it and they must not drift apart. $WORKDIR exists, this script
+# could not establish what it holds, and it therefore refuses without ever
+# suggesting the directory be emptied - see the three-outcomes comment in
+# main() for why that rule exists and what it protects.
+#
+# TWO CALLERS:
+#   1. `git remote get-url origin` failed (or came back empty).
+#   2. $WORKDIR cannot be READ OR TRAVERSED AT ALL. That one used to escape
+#      this diagnosis entirely: the branch below it tested `[ -n "$(ls -A
+#      "$WORKDIR" 2>/dev/null)" ]`, which cannot tell "empty" from "permission
+#      denied" - both come back as an empty string. A mode-0700 checkout owned
+#      by another uid fails `[ -e "$WORKDIR/.git" ]` with EACCES too, so it
+#      fell through to the clone, git printed its own accurate error, and this
+#      script then contradicted it by blaming the URL or the credential. The
+#      ownership diagnosis this function carries - the whole point of the
+#      Critical-4 fix - was never reached on the one shape most likely to need
+#      it.
+refuse_unidentified() {
+  local why="$1" gitsaid="${2:-}" url_given="${3:-}"
+  local owners first_uid owner_uid owner_path line
+  owners="$(foreign_owners "$WORKDIR")"
+  echo "entrypoint: cannot identify what $WORKDIR holds - $why" >&2
+  echo "  Refusing to go further rather than guess." >&2
+  if [ -n "$owners" ]; then
+    # Named for what it actually is, with the uid on each side. Note what this
+    # branch does NOT say: it makes no claim about which repository the
+    # directory is a clone of, because the failure that brought us here is
+    # precisely the failure to find that out.
+    echo "  The cause is an OWNERSHIP MISMATCH, not a different repository:" >&2
+    while read -r owner_uid owner_path; do
+      [ -n "$owner_path" ] && echo "    $owner_path is owned by uid $owner_uid" >&2
+    done <<EOWNERS
+$owners
+EOWNERS
+    echo "    this container runs as uid $(id -u) ($(whoami 2>/dev/null || echo 'unknown user'))" >&2
+    echo "  git refuses to read a repository owned by another user (CVE-2022-24765," >&2
+    echo "  \"dubious ownership\"). That is what failed, and it says NOTHING about which" >&2
+    echo "  repository this directory holds - it may well already be a clone of" >&2
+    echo "  $(printf '%s' "$url_given" | mask_secrets), the URL this run was given." >&2
+  fi
+  if [ -n "$gitsaid" ]; then
+    echo "  git said:" >&2
+    while IFS= read -r line; do echo "    $line" >&2; done <<EGITERR
+$gitsaid
+EGITERR
+  fi
+  echo "  DO NOT empty or delete $WORKDIR to get past this. Its contents could not be" >&2
+  echo "  identified here, so nothing establishes it is safe to destroy: if an earlier" >&2
+  echo "  run committed a captured log that was never pushed, that checkout holds the" >&2
+  echo "  only copy, and it is the evidence this toolkit exists to carry off a machine" >&2
+  echo "  nobody can log into." >&2
+  if [ -n "$owners" ]; then
+    first_uid="$(printf '%s\n' "$owners" | sed -n '1s/ .*//p')"
+    echo "  Fix the ownership instead, whichever suits the estate:" >&2
+    echo "    - run this container AS that uid: rebuild the image with" >&2
+    echo "      --build-arg HELIOGRAPH_UID=$first_uid, tag it yourself, and run that tag" >&2
+    echo "      (heliograph.sh --image <your-tag>)" >&2
+    echo "    - or give the host directory to uid $(id -u): chown -R $(id -u) <the host path>" >&2
+    echo "    - or, under rootless podman, use --userns=keep-id, which heliograph.sh" >&2
+    echo "      already adds for you when podman is the runtime" >&2
+    echo "  Either way the checkout survives, which is the point." >&2
+  else
+    echo "  Point HELIOGRAPH_WORKDIR at a different, empty location for this run, and" >&2
+    echo "  investigate this directory separately, with its contents intact." >&2
+  fi
+  exit 1
+}
+
 usage() {
   cat <<'USAGE'
 usage: entrypoint.sh <repo-url> [start.sh args...]
@@ -269,8 +397,7 @@ USAGE
 }
 
 main() {
-  local url="" existing_url remote_rc remote_err errfile owners first_uid
-  local owner_uid owner_path line
+  local url="" existing_url remote_rc remote_err errfile
 
   # Both set is refused rather than one silently winning. It used to let
   # REPO_URL win and treat every argument as opaque passthrough to start.sh -
@@ -309,10 +436,43 @@ main() {
     echo "  could read it straight out of ps. Pass the credential separately instead:" >&2
     echo "  GIT_TOKEN, GIT_TOKEN_FILE or GIT_AUTH_HEADER in the environment, with a" >&2
     echo "  plain URL here." >&2
+    # The half this refusal cannot undo, said plainly rather than left for the
+    # operator to work out. This message used to reason only about the inside
+    # of this container, which is the LAST place that string went. A URL that
+    # reaches a container through a command line has already been on the
+    # HOST's: in whatever shell composed it (and that shell's history), in the
+    # host process table while `docker run` was parsing it, and in `docker
+    # inspect`'s .Config.Cmd for as long as this container exists - the last
+    # of which anyone who can talk to the daemon can read at leisure, long
+    # after this run has failed. Nothing inside here can reach any of that, so
+    # the only honest advice is to treat the credential as spent.
+    echo "  AND ROTATE THAT CREDENTIAL. Refusing the clone does not un-leak it: if this" >&2
+    echo "  URL arrived on a 'docker run'/'podman run' command line, it is already in the" >&2
+    echo "  host's process table and in 'docker inspect' output (.Config.Cmd) for as long" >&2
+    echo "  as this container exists, as well as in the shell history of whoever typed" >&2
+    echo "  it. Nothing running in here can withdraw any of that. Treat it as compromised," >&2
+    echo "  issue a new one, and pass the new one by environment or by mounted file." >&2
     exit 2
   fi
 
   mkdir -p "$WORKDIR" || { echo "entrypoint: cannot create $WORKDIR" >&2; exit 1; }
+
+  # BEFORE anything is inferred from what is or is not inside $WORKDIR: can
+  # this process look inside it at all? Every test below - `[ -e
+  # "$WORKDIR/.git" ]`, `[ -x "$WORKDIR/start.sh" ]`, `ls -A` - answers "no"
+  # and "empty" identically when the real answer is EACCES, so a mode-0700
+  # directory owned by another uid used to fall all the way through to the
+  # clone and be diagnosed as a bad URL or a bad credential, contradicting
+  # git's own accurate error a line earlier. It is exactly the shape the
+  # ownership diagnosis exists for - a bind-mounted checkout belonging to
+  # someone else - and it was the one shape that never reached it.
+  # Read AND execute: a directory needs +x to traverse (stat a child) and +r
+  # to list, and either one missing makes its contents unknowable from here.
+  if [ -d "$WORKDIR" ] && { [ ! -r "$WORKDIR" ] || [ ! -x "$WORKDIR" ]; }; then
+    refuse_unidentified \
+      "this user cannot read or traverse it, so nothing inside it can be established." \
+      "" "$url"
+  fi
 
   if [ -e "$WORKDIR/.git" ] && [ -x "$WORKDIR/start.sh" ]; then
     # An already-cloned repo, most often a persistent volume surviving a
@@ -382,52 +542,9 @@ main() {
     # match against an empty string: whatever produced it, it is not an
     # identification of this directory's contents either.
     if [ "$remote_rc" -ne 0 ] || [ -z "$existing_url" ]; then
-      owners="$(foreign_owners "$WORKDIR")"
-      echo "entrypoint: cannot identify what $WORKDIR holds - reading its origin remote" >&2
-      echo "  failed (git exited $remote_rc). Refusing to go further rather than guess." >&2
-      if [ -n "$owners" ]; then
-        # Named for what it actually is, with the uid on each side. Note
-        # what this branch does NOT say: it makes no claim about which
-        # repository the directory is a clone of, because the failure that
-        # brought us here is precisely the failure to find that out.
-        echo "  The cause is an OWNERSHIP MISMATCH, not a different repository:" >&2
-        while read -r owner_uid owner_path; do
-          [ -n "$owner_path" ] && echo "    $owner_path is owned by uid $owner_uid" >&2
-        done <<EOWNERS
-$owners
-EOWNERS
-        echo "    this container runs as uid $(id -u) ($(whoami 2>/dev/null || echo 'unknown user'))" >&2
-        echo "  git refuses to read a repository owned by another user (CVE-2022-24765," >&2
-        echo "  \"dubious ownership\"). That is what failed, and it says NOTHING about which" >&2
-        echo "  repository this directory holds - it may well already be a clone of" >&2
-        echo "  $(printf '%s' "$url" | mask_secrets), the URL this run was given." >&2
-      fi
-      if [ -n "$remote_err" ]; then
-        echo "  git said:" >&2
-        while IFS= read -r line; do echo "    $line" >&2; done <<EGITERR
-$remote_err
-EGITERR
-      fi
-      echo "  DO NOT empty or delete $WORKDIR to get past this. Its contents could not be" >&2
-      echo "  identified here, so nothing establishes it is safe to destroy: if an earlier" >&2
-      echo "  run committed a captured log that was never pushed, that checkout holds the" >&2
-      echo "  only copy, and it is the evidence this toolkit exists to carry off a machine" >&2
-      echo "  nobody can log into." >&2
-      if [ -n "$owners" ]; then
-        first_uid="$(printf '%s\n' "$owners" | sed -n '1s/ .*//p')"
-        echo "  Fix the ownership instead, whichever suits the estate:" >&2
-        echo "    - run this container AS that uid: rebuild the image with" >&2
-        echo "      --build-arg HELIOGRAPH_UID=$first_uid, tag it yourself, and run that tag" >&2
-        echo "      (heliograph.sh --image <your-tag>)" >&2
-        echo "    - or give the host directory to uid $(id -u): chown -R $(id -u) <the host path>" >&2
-        echo "    - or, under rootless podman, use --userns=keep-id, which heliograph.sh" >&2
-        echo "      already adds for you when podman is the runtime" >&2
-        echo "  Either way the checkout survives, which is the point." >&2
-      else
-        echo "  Point HELIOGRAPH_WORKDIR at a different, empty location for this run, and" >&2
-        echo "  investigate this directory separately, with its contents intact." >&2
-      fi
-      exit 1
+      refuse_unidentified \
+        "reading its origin remote failed (git exited $remote_rc)." \
+        "$remote_err" "$url"
     fi
 
     if [ "$existing_url" != "$url" ]; then
@@ -457,10 +574,10 @@ EGITERR
     # otherwise re-resolve. Reusing that rather than adding a second pull
     # with a second copy of the credential logic is the "must not duplicate
     # start.sh" rule applied to this path specifically.
-    echo "entrypoint: $WORKDIR already holds a clone (persistent volume) - reusing it."
+    echo "$(stamp) entrypoint: $WORKDIR already holds a clone (persistent volume) - reusing it."
     echo "  Not re-cloning: that could discard a commit or a log this checkout holds"
     echo "  that has not been pushed yet. start.sh's own sync brings it up to date next."
-  elif [ -d "$WORKDIR" ] && [ -n "$(ls -A "$WORKDIR" 2>/dev/null)" ]; then
+  elif [ -d "$WORKDIR" ] && ! workdir_is_empty "$url"; then
     # Not empty and not a recognisable checkout: refuse rather than guess.
     # Cloning into it would fail anyway (git refuses a non-empty target
     # directory); silently deleting it first would be the wrong failure mode
@@ -486,8 +603,8 @@ EGITERR
     fi
     exit 1
   else
-    echo "entrypoint: cloning $(printf '%s' "$url" | mask_secrets) into $WORKDIR"
-    echo "entrypoint: credential: $(entrypoint_credential_desc)"
+    echo "$(stamp) entrypoint: cloning $(printf '%s' "$url" | mask_secrets) into $WORKDIR"
+    echo "$(stamp) entrypoint: credential: $(entrypoint_credential_desc)"
     local rc
     # STREAMED, not captured-then-printed: this used to buffer the whole
     # clone into a variable and print it only once git exited, so `docker

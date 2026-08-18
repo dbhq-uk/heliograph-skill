@@ -2,13 +2,13 @@
 #  Dockerfile - somewhere the loop can live that is not somebody's laptop
 # =============================================================================
 # This image supplies only what start.sh's own preflight refuses to run
-# without, plus git, openssh-client and sudo. It has NO ENTRYPOINT YET: PR 3
-# task 2 adds one that clones a transport repo and hands over to that
-# repo's own start.sh, which bootstrap.sh copies into every transport repo
-# and which already owns the preflight, the credential resolution, the
-# branch checkout and the handover to agent.sh. Duplicating any of that here
-# would leave no answer to "which copy of the preflight is authoritative",
-# so this file does not try.
+# without, plus git, openssh-client and sudo. Its ENTRYPOINT is entrypoint.sh
+# (declared at the foot of this file): it clones a transport repo and hands
+# over to that repo's own start.sh, which bootstrap.sh copies into every
+# transport repo and which already owns the preflight, the credential
+# resolution, the branch checkout and the handover to agent.sh. Duplicating
+# any of that here would leave no answer to "which copy of the preflight is
+# authoritative", so neither this file nor the entrypoint tries.
 #
 # Measured, not guessed - see task-1-report.md for the full method and for
 # TWO DIFFERENT NUMBERS this daemon reports, which disagree by a wide
@@ -144,7 +144,7 @@ RUN useradd --create-home --uid "${HELIOGRAPH_UID}" --shell /bin/bash heliograph
 # whatever mode the file carried when it entered the build context (git
 # preserves the executable bit through a clone, but a build context that
 # arrived some other way - `docker build` from a tarball, a CI checkout with
-# core.fileMode off - might not). PR 3 task 2's entrypoint.sh: clone the
+# core.fileMode off - might not). entrypoint.sh: clone the
 # transport repo the container is given, then hand over to that repo's own
 # start.sh. It owns none of start.sh's job - the preflight, the credential
 # table, the branch checkout, the handover to agent.sh - only the clone that
