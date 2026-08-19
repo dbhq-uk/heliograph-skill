@@ -322,7 +322,7 @@ run_entry -e "REPO_URL=file:///srv/repo.git" -v "$TMP/repourl-ambiguity.git:/srv
   "$IMAGE" "https://ci-user:$TOKEN@example.invalid/x.git"
 assert_eq "REPO_URL plus a positional argument is refused rather than one silently winning" \
   "2" "$RC"
-assert_contains "and it names the ambiguity" "both REPO_URL and a command-line argument" "$OUT"
+assert_contains "and it names the ambiguity" "REPO_URL is set, so the first argument is a start.sh argument" "$OUT"
 assert_eq "the credential in the ignored positional argument never reaches output either" "" \
   "$(printf '%s' "$OUT" | grep -o "$TOKEN")"
 
