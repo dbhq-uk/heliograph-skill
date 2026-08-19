@@ -57,7 +57,15 @@ while IFS= read -r rel; do
   cp -p "$SRC/$rel" "$dest"
   echo "  installed          : ${dest#$TARGET/}"
   copied=$((copied + 1))
-done < <(cd "$SRC" && find . -type f | sed 's|^\./||' | sort)
+done < <(cd "$SRC" && find . \
+  \( -name '.terraform' -o -name '.git' -o -name 'node_modules' \) -prune -o \
+  -type f -print | sed 's|^\./||' | sort)
+
+# The prune is not tidiness. `terraform init` drops a provider binary into
+# .terraform/ next to each template, and azurerm alone is over 300MB. Without
+# this, a bootstrapped transport repo went from about 200KB to 913MB, and that
+# repo gets cloned on a locked-down control node, sometimes over a link that is
+# the reason this tool exists. Measured, not guessed.
 
 echo
 echo "heliograph: $copied file(s) installed, $skipped left alone, in $TARGET"

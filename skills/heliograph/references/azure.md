@@ -412,3 +412,25 @@ transient one - but it cleared on trying a different SKU tier (`S1` instead
 of `B1`) immediately, with no wait needed. Read as SKU-family capacity
 settling right after a delete, not a real quota exhaustion; the fix that
 worked here was picking a different tier, not waiting it out.
+
+### Do not let terraform artefacts into the transport repo
+
+`terraform init` writes a provider binary into `.terraform/` next to each
+template. The azurerm provider alone is over 300MB.
+
+`bootstrap.sh` copies the toolkit with `find`, not with git, so it does not know
+about `.gitignore`. Before this was fixed, a bootstrapped transport repo was
+913MB instead of about 200KB. That repo gets cloned on the control node, which
+is often the machine with the slowest link.
+
+`bootstrap.sh` now prunes `.terraform`, `.git` and `node_modules`. If you add a
+tool that writes build artefacts under `toolkit/`, add it to that prune list.
+
+Check it after any change:
+
+```
+bootstrap.sh /tmp/check && du -sh /tmp/check
+```
+
+A few hundred KB is right. Megabytes means something is being copied that
+should not be.
