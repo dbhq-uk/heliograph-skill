@@ -667,6 +667,28 @@ main() {
   # running it as one - a signal sent to this container's pid 1 has to reach
   # start.sh (and, through its own exec, agent.sh) directly, or an operator's
   # `docker stop` would leave the real work orphaned and unsignalled.
+# A status endpoint, when a host asks for one.
+#
+# Off unless HELIOGRAPH_STATUS_PORT is set, so ACI, a VM and a plain docker run
+# are unaffected. Azure Web App for Containers needs it: that platform probes a
+# port and, when nothing answers, stops the site after 230 seconds. Measured.
+#
+# Started here rather than inside start.sh because it is a property of the
+# HOST, not of the loop. start.sh runs on laptops and jump boxes that want no
+# listening socket at all.
+#
+# Backgrounded before the exec below, so it survives becoming a child of
+# whatever start.sh turns into, and dies with the container when pid 1 exits.
+if [ -n "${HELIOGRAPH_STATUS_PORT:-}" ]; then
+  if [ -x /usr/local/bin/status-server.pl ]; then
+    HELIOGRAPH_WORKDIR="$WORKDIR" /usr/local/bin/status-server.pl &
+  else
+    echo "entrypoint: HELIOGRAPH_STATUS_PORT is set but status-server.pl is not" >&2
+    echo "  in this image. The port will not be answered, and a host that probes" >&2
+    echo "  one will stop this container." >&2
+  fi
+fi
+
   exec ./start.sh "$@"
 }
 
