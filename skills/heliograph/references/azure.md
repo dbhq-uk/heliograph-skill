@@ -18,9 +18,11 @@ that, run the step again.
 | | Good for | Watch out for |
 |---|---|---|
 | ACI | One container. Cheapest and simplest to explain | You cannot read logs while it is crash-looping. See below |
-| Web App for Containers | You can get a shell into it to debug | Built for web servers, so a container with no open port needs settings |
-| Container Apps Job | Runs on a schedule, so nothing is long-lived | Extra concepts: environment, workload profile |
-| VM | Easiest to debug. Just SSH in | You own an OS and its patching |
+| Web App for Containers | You can get a shell into it to debug | Built for web servers: a container with no open port gets killed and restarted every 230s unless you raise `WEBSITES_CONTAINER_START_TIME_LIMIT`. It also always has a public HTTPS endpoint - VNet integration is outbound-only |
+| Container Apps Job | Runs on a schedule, so nothing is long-lived | The published image refuses `REPO_URL` and an argument together, and a Job's whole point is passing `--once` - so the repo URL has to travel positionally instead |
+| VM (systemd, no container) | Easiest to debug: SSH in, or `az vm run-command`. No image, no registry | You own an OS and its patching. Could not be proven live in this subscription - see below |
+
+All four were deployed for real against `rg-heliograph-test` and torn down again, except the VM, which this subscription refused to provision at all (any SKU, any region) - see "The VM host could not be deployed" below. Every other finding on this page came from watching a real deployment fail or succeed, not from documentation.
 
 ## What we learned by deploying these
 
@@ -134,3 +136,279 @@ az container show -g RG -n NAME --query instanceView.state
 ```
 
 Use `--no-wait` on the deployment and poll the container instead.
+
+### Terraform's azurerm_container_group needs a port even when nothing listens
+
+The bicep template never mentions `ipAddress` at all, and Azure is happy to
+omit the object entirely for a VNet-injected group with no ports. Terraform's
+`azurerm_container_group` builds that object as soon as `subnet_ids` is set -
+a private IP is unavoidable once the group joins a subnet - and then Azure
+refuses it two different ways depending on what else is set:
+
+```
+MissingIpAddressPorts: The ports in the 'ipAddress' of container group ...
+cannot be empty.
+```
+
+Add a `ports {}` block and the very next attempt fails a different way,
+because `ip_address_type` defaults to `"Public"` and a network profile
+forbids that:
+
+```
+InvalidIpAddressTypeForNetworkProfile: IP Address type can't be public when
+network profile is set.
+```
+
+The fix is both together: `ip_address_type = "Private"` AND a `ports {}`
+block. The port is declared, not bound - the image never listens on it, and
+there is still no public IP - it exists purely to satisfy the provider's own
+validation. A difference in what the two tools generate for the same intent,
+not a difference in what Azure allows.
+
+## Web App for Containers
+
+### A container with no HTTP server gets killed every 230 seconds
+
+App Service for Linux custom containers runs a mandatory startup probe: it
+pings the container over HTTP on port 80 (or `WEBSITES_PORT`) and, if nothing
+answers within `WEBSITES_CONTAINER_START_TIME_LIMIT` (default 230 seconds),
+kills the container and starts a fresh one. heliograph's agent loop is not a
+web server and never will be, so this fires every time:
+
+```
+Site startup probe failed after 230.021585 seconds.
+... ContainerTimeout ... Container did not respond to startup probe on port 80
+within the expected time limit of 230s. No listening ports were detected in
+the container. Ensure your application starts a web server that listens on a
+port.
+```
+
+Confirmed by deploying: the container genuinely runs and does real work for
+up to that limit - clone, preflight, and a live request/response round trip
+all completed inside the window - but the platform still tears it down and
+restarts it the moment the limit passes, whether or not anything went wrong.
+
+There is no setting that turns the probe off. Raising
+`WEBSITES_CONTAINER_START_TIME_LIMIT` (max 1800s) only delays the kill, since
+the container is never going to open that port - it buys up to half an hour
+of uninterrupted operation between forced restarts rather than removing them.
+For a short debugging session that is enough; for a host meant to run
+indefinitely, this is a genuine limitation of the platform, not a
+configuration gap in the template. The only real fix is adding a trivial
+stub HTTP listener to the image itself, which is outside what "bring the
+compute and nothing else" covers here.
+
+`alwaysOn: true` (or `always_on = true` in Terraform) is unrelated to this and
+still required regardless: without it, the platform additionally idles out
+and unloads the whole app after about 20 minutes with no *inbound* HTTP
+traffic, which a polling loop that serves nothing will never generate.
+
+### VNet integration here is outbound-only, and the app still has a public URL
+
+Regional VNet Integration gives the app egress into the VNet; it is not the
+inbound isolation ACI's subnet injection provides. `<name>.azurewebsites.net`
+resolves and answers regardless of the VNet configuration - closing that needs
+a private endpoint, which is further estate infrastructure this template
+deliberately does not add. Anyone choosing this host for the "no inbound"
+property ACI has should not assume it carries over.
+
+`vnetRouteAllEnabled` (bicep) / `vnet_route_all_enabled` (Terraform) is not
+optional either: without it, only traffic bound for addresses inside the
+VNet's own range goes through the integration, and everything else - the git
+host included - takes the platform's ordinary public egress, defeating the
+point of handing the template a subnet at all.
+
+### The persistent /home mount has to be turned off by hand
+
+Every Linux container Web App gets a persistent Azure Files share mounted at
+`/home` by default, so a checkout would survive a restart - the opposite of
+every other host in this PR, where git is the only persistence. Turn it off
+explicitly with `WEBSITES_ENABLE_APP_SERVICE_STORAGE=false`, or the "the
+checkout is transient" story silently stops being true on this one host.
+
+### Terraform: setting `docker_registry_url` alongside a fully-qualified image name double-prefixes it
+
+`azurerm_linux_web_app`'s `application_stack.docker_image_name` expects the
+FULL image reference, registry host included - `var.image` here is already
+`ghcr.io/dbhq-uk/...`. Also setting `docker_registry_url = "https://ghcr.io"`
+(a field meant for a registry that needs credentials attached separately,
+such as ACR) makes the provider double-prefix what it builds:
+
+```
+linuxFxVersion: "DOCKER|ghcr.io/ghcr.io/dbhq-uk/heliograph-toolkit:1.0.0-rc1"
+```
+
+a registry ghcr.io does not have. For a public registry, leave
+`docker_registry_url` unset entirely - the image name alone is enough.
+
+### Getting a full boot log needs a download, not `log tail`
+
+`az webapp log tail` reliably showed nothing during these tests, including
+across a restart timed to land inside the tail window. What worked every
+time was enabling filesystem container logging once
+(`az webapp log config --docker-container-logging filesystem`) and then
+pulling the whole log file after the fact:
+
+```
+az webapp log download -g RG -n NAME --log-file logs.zip
+unzip logs.zip
+grep -i entrypoint LogFiles/*_docker.log   # NOT the *_default_scm_docker.log one -
+                                            # that is Kudu's own sidecar, not the app
+```
+
+The entrypoint clone, the credential line and the full preflight table all
+showed up there, confirming the agent starts correctly on this host despite
+the startup-probe restarts above.
+
+## Container Apps Job
+
+### `command` and `args` are genuinely separate here, unlike ACI
+
+ACI's `command` field replaces the image's ENTRYPOINT outright and there is
+no separate arguments field at all (see above). Azure Container Apps -
+including Jobs - has both `command` and `args`, closer to Kubernetes: leaving
+`command` unset keeps the image's own ENTRYPOINT in force, and `args` becomes
+its argv. That distinction does not, on its own, get around the trap below -
+it is what makes the workaround possible to express cleanly.
+
+### The published image refuses REPO_URL plus an argument - so the URL travels positionally instead
+
+`ghcr.io/dbhq-uk/heliograph-toolkit:1.0.0-rc1` ships an `entrypoint.sh` that
+refuses outright whenever `REPO_URL` is set AND any positional argument is
+also given. The fix for this lives in this branch's working tree but is not
+published in that tag. A Container Apps Job cannot avoid the collision: a Job
+runs once and exits, which means passing `--once` to `agent.sh`, and every
+other host in this PR only avoids the refusal by passing no arguments at all
+in its default configuration.
+
+Two ways out, both real:
+
+1. **Pass the URL positionally, leave `REPO_URL` unset.** `args = [repoUrl,
+   "--", "--once"]`, no `REPO_URL` environment variable at all. Works today
+   against the published image, confirmed by deploying both the bicep and
+   the Terraform version of this template and watching a genuine
+   request/response round trip complete.
+2. **Publish a new image tag** built from this branch, and use `REPO_URL` +
+   `args` everywhere, exactly like the other three hosts.
+
+**This PR takes option 1** for both containerappsjob templates. It needs no
+publish step, it is provably correct against the exact image every other
+host in this PR was tested against, and the cost is confined to one
+host-specific comment block rather than a new release process. Option 2 is
+the more uniform long-term answer once a new tag exists - worth revisiting
+then, not a reason to block this PR on a publish today.
+
+Passing `--once` also needs the same `--` that `start.sh` itself requires -
+`args = [repoUrl, "--once"]` alone reaches `start.sh` as an unrecognised
+option (`unknown option: --once`, exit 2) and never gets to `agent.sh` at
+all. `[repoUrl, "--", "--once"]` is the whole shape.
+
+### Executions are cheap to trigger by hand for testing
+
+`az containerapp job start -g RG -n NAME` runs one execution immediately,
+regardless of whether the job's configured trigger type is `Schedule` or
+`Manual` - useful for proving a scheduled job actually works without waiting
+for the cron to fire. `az containerapp job execution list -g RG -n NAME -o
+table` shows whether it Succeeded; `az containerapp job logs show -g RG -n
+NAME --container agent` streams the console output of the most recent
+execution, though it only reliably shows the TAIL of a fast-finishing
+execution's output rather than the whole thing (the underlying Log Analytics
+ingestion lags by several minutes, so querying the workspace directly right
+after a run comes back empty too) - the transport repo's own
+`agent/status`/`ops-logs/` are the more reliable evidence for a fast job.
+
+## VM (systemd, no container)
+
+This host runs no image at all: cloud-init installs git and a small set of
+packages, clones the transport repo directly, and starts `agent.sh` under a
+systemd unit. Both the bicep and the Terraform templates were written,
+bicep-built/`terraform validate`d clean, and the cloud-init script that
+drives first boot passes `shellcheck -S warning` and `bash -n` - but neither
+could be proven with a real deployment.
+
+### The VM host could not be deployed in this subscription
+
+Every `Microsoft.Compute/virtualMachines` size tried - `Standard_B1s`,
+`Standard_B1ms`, `Standard_B2s`, `Standard_D2s_v3`, `Standard_D2_v5`,
+`Standard_E2s_v5`, `Standard_F2s_v2`, `Standard_DS1_v2`, `Standard_A1_v2`,
+`Standard_A2_v2`, `Standard_B2ats_v2` - was refused with the same error, in
+`uksouth` and, tried again as a direct check, in `northeurope` too:
+
+```
+SkuNotAvailable: The requested VM size for resource 'Following SKUs have
+failed for Capacity Restrictions: Standard_B1s' is currently not available in
+location 'uksouth'. Please try another size or deploy to a different location
+or different zone.
+```
+
+That message reads like a per-SKU stock-out, and it invites exactly the wrong
+next move - trying another size, then another region. Both were tried here,
+repeatedly, and both failed identically across eleven different SKUs and two
+regions. `az vm list-usage` showed healthy quota throughout (0 of 65 vCPUs
+used in the relevant families). The consistent, size-independent,
+region-independent failure is the signature of a subscription-level
+restriction on raw IaaS compute - common on sponsorship/trial subscriptions -
+not a genuine capacity shortage. This subscription (`Microsoft Azure
+Sponsorship`) could not provision a single VM of any size anywhere it was
+tried, while ACI, Web App for Containers and Container Apps Jobs - all VM-backed
+under the hood, all provisioned through a managed platform rather than
+directly - worked without incident.
+
+**This is an environment limitation, not a template defect.** The templates
+are built, validated and reviewed against the same patterns already proven
+live on the other three hosts (the credential handling mirrors
+`entrypoint.sh`'s own env-based approach exactly; the systemd unit's
+`Restart=on-failure` mirrors ACI's `restartPolicy: OnFailure`). They have not
+been proven by an actual boot, and that gap should not be quietly assumed
+away: the next person to reach for this host needs a subscription where
+`Microsoft.Compute/virtualMachines` is actually enabled, and should expect to
+spend their first attempt confirming that, not debugging cloud-init.
+
+### The design, for whenever a working subscription is available
+
+- **Custom data, not a container.** `cloud-init.sh` runs once at first boot:
+  installs `git` and `ca-certificates` (everything else `start.sh`'s
+  preflight needs - bash, GNU sed, GNU coreutils, `setsid` - already ships on
+  Ubuntu 24.04), creates an unprivileged `heliograph` user, clones the
+  transport repo, and writes a `heliograph.service` systemd unit with
+  `Restart=on-failure`.
+- **The credential travels the same way `entrypoint.sh`'s does**: through
+  `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0` rather than `git
+  -c http.extraHeader=...`, so it never appears in that process's own argv -
+  exactly as readable via `/proc/<pid>/cmdline` on a bare VM as inside a
+  container.
+- **Azure custom data is not a safe place for a long-lived secret.** Anyone
+  who can read this VM's own resource definition (`az vm show`) can read the
+  base64 payload straight back out - the same class of caveat as ACI's plain
+  environment variable and the Web App's app setting, not a new one, but
+  worth naming because a VM more easily suggests "this is just a box" than a
+  managed container resource does. The right fix is a managed identity
+  reading the token from Key Vault at boot, never putting it in custom data
+  at all; that needs a Key Vault as further bring-your-own estate
+  infrastructure this template does not assume exists, so it is documented
+  as a real limitation rather than built here.
+- **No inbound, same as ACI**: no public IP on the NIC. Debugging still
+  works without one - `az vm run-command invoke --command-id
+  RunShellScript` talks to the VM agent through the control plane, not a
+  direct network path from the operator's machine, so there is nothing to
+  open for it.
+
+## App Service Plan: deleting the last app on a plan deletes the plan too
+
+`az webapp delete` on the only app left on a plan deletes that plan as well,
+unless `--keep-empty-plan` is passed - and the warning naming this appears
+*before* the delete, easy to miss when tearing down quickly between tests.
+Recreating the same plan straight after can then fail on quota that a moment
+ago was fine:
+
+```
+ERROR: Operation cannot be completed without additional quota.
+Current Limit (B1 VMs): 0
+Current Usage: 0
+```
+
+`Current Limit: 0` alongside `Current Usage: 0` looks like a hard cap, not a
+transient one - but it cleared on trying a different SKU tier (`S1` instead
+of `B1`) immediately, with no wait needed. Read as SKU-family capacity
+settling right after a delete, not a real quota exhaustion; the fix that
+worked here was picking a different tier, not waiting it out.
