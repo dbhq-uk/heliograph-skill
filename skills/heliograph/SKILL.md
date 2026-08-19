@@ -177,6 +177,35 @@ The full method, and the mistakes behind each rule:
 [references/method.md](references/method.md). Worth reading in full before a hard
 investigation.
 
+## Running it in Azure, instead of on somebody's terminal
+
+Sometimes there is no willing human to start `./start.sh` and leave it running.
+`toolkit/azure/` runs the agent as Azure infrastructure instead. Four hosts,
+each in bicep and Terraform:
+
+| host | state |
+|---|---|
+| Container Instances, VNet-injected | deployed and proven |
+| Web App for Containers | deployed and proven |
+| Container Apps Job, scheduled | deployed and proven |
+| VM with a systemd unit | written and validates, never deployed |
+
+All bring-your-own: the estate passes in a VNet, subnet, plan or environment
+that already exists, and the template creates the compute and nothing else. The
+checkout is transient. Git is the persistence, so if the compute dies you run
+the step again.
+
+Two things that will waste your time if you do not know them:
+
+- The published image tag has **no `v`**. The git tag is `v1.0.0-rc1`, the image
+  is `ghcr.io/dbhq-uk/heliograph-toolkit:1.0.0-rc1`.
+- For a GitHub transport repo, set **`GIT_TOKEN_USER=x-access-token`**. Without
+  it git says `could not read Username`, which reads like a missing credential
+  rather than a wrong one.
+
+Everything else, including what only showed up by deploying these, is in
+[references/azure.md](references/azure.md).
+
 ## Secrets
 
 Logs are committed and pushed, so anything a command prints is in git history
@@ -221,6 +250,7 @@ store the far side has. Details, and why each guard is there:
 | [references/runner.md](references/runner.md) | `start.sh`, `run.sh`, `agent.sh`, `caprun.sh`, every `cap_*` and knob |
 | [references/method.md](references/method.md) | how to debug across a gap. The expensive lessons |
 | [references/transport.md](references/transport.md) | how the control node authenticates to the git host |
+| [references/azure.md](references/azure.md) | running the agent in Azure, and what deploying it taught us |
 | [references/secrets.md](references/secrets.md) | `secret.sh`, for a value that has to reach the far side |
 | [references/remote-repo.md](references/remote-repo.md) | changing a repo that is also on the far side |
 | [references/container.md](references/container.md) | running the control node in a container: what ships, why, and the honest limits |

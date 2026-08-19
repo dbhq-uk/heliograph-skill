@@ -55,3 +55,24 @@ will never see, in front of someone who cannot debug it. Edit it accordingly.
 Give you access you do not have. There is no tunnel, no proxy and no held
 connection. Every command runs because someone with legitimate access chose to
 run it, and the only thing crossing the gap is a git commit.
+
+## Running it in Azure
+
+The operator does not have to be a person at a terminal. `toolkit/azure/` has
+templates that run the agent as Azure infrastructure instead.
+
+Four hosts, each in bicep and Terraform:
+
+| host | state |
+|---|---|
+| Container Instances, VNet-injected | deployed and proven |
+| Web App for Containers | deployed and proven |
+| Container Apps Job, scheduled | deployed and proven |
+| VM with a systemd unit | written and validates, never deployed |
+
+All of them are bring-your-own: you pass in a VNet, subnet, plan or environment
+that already exists, and the template creates the compute and nothing else.
+
+Full detail, and the things that only showed up by deploying them, are in
+[references/azure.md](references/azure.md).
+
