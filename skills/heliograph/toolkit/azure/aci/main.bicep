@@ -50,7 +50,9 @@ param startArgs array = []
 param entrypoint string = '/usr/local/bin/entrypoint.sh'
 
 param cpu int = 1
-param memoryInGB int = 1
+
+@description('Memory in GB. Named `memory`, not `memoryInGB`, to match the parameter name every other host template in this PR uses.')
+param memory int = 1
 
 resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' existing = {
   name: vnetName
@@ -88,7 +90,7 @@ resource group 'Microsoft.ContainerInstance/containerGroups@2023-05-01' = {
           resources: {
             requests: {
               cpu: cpu
-              memoryInGB: memoryInGB
+              memoryInGB: memory
             }
           }
           // secureValue keeps the token out of the template, out of deployment
