@@ -58,6 +58,62 @@ Two rules follow:
   `['/usr/local/bin/entrypoint.sh', '--check']`. If you pass no arguments, leave
   `command` empty so the image's own entrypoint runs.
 
+### App Service kills a container that does not listen, so we serve status
+
+Azure Web App for Containers runs an HTTP startup probe on a port. You cannot
+turn it off. heliograph never opened a port, so the platform killed it:
+
+```
+Site startup probe failed after 230.0123255 seconds.
+No listening ports were detected in the container.
+Failed to start site. Revert by stopping site.
+```
+
+Raising `WEBSITES_CONTAINER_START_TIME_LIMIT` only delays this. Nothing was ever
+going to answer.
+
+The fix is not a stub. The image now ships `status-server.pl`, which serves the
+agent's own status file:
+
+```
+$ curl https://yourapp.azurewebsites.net/status
+state:    idle
+id:       web-152519Z
+step:     env
+host:     aa673558e146
+branch:   main
+utc:      2026-08-19T15:25:34Z
+```
+
+That turns the probe from an obstacle into the reason to pick this host. The
+hardest question about a far-side agent is "is it still running, or did it die
+an hour ago", and this is the only host that answers it without cloning
+anything.
+
+Three things about it:
+
+- **It is off unless `HELIOGRAPH_STATUS_PORT` is set.** ACI, a VM and a plain
+  `docker run` are unaffected and open no socket.
+- **It is perl, and costs nothing.** git already pulls perl into the image, about
+  21MB of it, and `IO::Socket::INET` is core. Adding python3 or busybox for this
+  would have been adding a package to do something already possible.
+- **`/` and `/health` always return 200 while the server answers. `/status` does
+  not.** That split matters. A startup probe asks "did the container come up",
+  and returning 503 there because the agent had not written a status yet failed
+  the probe and stopped the site. We made that mistake first. Point a platform
+  probe at `/`, and point a monitor at `/status`.
+
+It serves status, never logs. Logs go back over git. An unauthenticated endpoint
+on a container in someone's estate is the wrong place for captured output.
+
+### App Service quota is separate, and small
+
+On a Sponsorship subscription, `B1` and `S1` App Service quota was 0. `P0v3` and
+`P1v2` worked. Quota is also slow to release: deleting a plan and immediately
+recreating it fails, and takes a couple of minutes to free up.
+
+If a plan will not create, try another SKU before assuming the template is wrong.
+
 ### A crash-looping ACI in a VNet gives you no logs
 
 If the container fails to start, `az container logs` returns:

@@ -50,8 +50,11 @@ param gitToken string = ''
 @description('Basic username for the token. GitHub wants x-access-token, GitLab oauth2, Azure DevOps empty. Getting this wrong looks like a prompt for a username, not an auth error.')
 param gitTokenUser string = ''
 
+@description('Port the container answers the platform startup probe on. App Service probes a port and stops the site if nothing replies. 8080 because the container runs unprivileged and cannot bind 80.')
+param statusPort int = 8080
+
 @description('Image to run.')
-param image string = 'ghcr.io/dbhq-uk/heliograph-toolkit:1.0.0-rc1'
+param image string = 'ghcr.io/dbhq-uk/heliograph-toolkit:1.0.0-rc2'
 
 @description('Arguments for start.sh, and after --, for agent.sh. The repo URL is NOT one of these: it travels as REPO_URL. Space-joined into the container\'s Startup Command, so no argument here may itself contain a space.')
 param startArgs array = []
@@ -110,6 +113,21 @@ resource site 'Microsoft.Web/sites@2023-12-01' = {
       // above, which is why planName's description says so.
       alwaysOn: true
       appSettings: concat([
+        // App Service runs a startup probe on a port and cannot be told not
+        // to. Without something answering, it stops the site after 230
+        // seconds: "No listening ports were detected in the container".
+        // Measured, twice. The image ships a status server for this; it stays
+        // off until this variable is set, so the other hosts are unaffected.
+        {
+          name: 'HELIOGRAPH_STATUS_PORT'
+          value: string(statusPort)
+        }
+        // Tell App Service which port to probe. Without this it defaults to
+        // 80, which the container cannot bind as a non-root user.
+        {
+          name: 'WEBSITES_PORT'
+          value: string(statusPort)
+        }
         {
           name: 'REPO_URL'
           value: repoUrl
