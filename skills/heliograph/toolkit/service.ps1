@@ -51,8 +51,29 @@ function Assert-Prereqs {
 #
 # caplib owns the credential chain, so this only reports what a detached run
 # would find: a file it can read, or nothing.
+# NATIVE COMMANDS AND $ErrorActionPreference = 'Stop' DO NOT MIX. git writing to
+# stderr becomes a TERMINATING NativeCommandError once its error stream is
+# redirected, so `git remote get-url origin` against a repo with no remote threw
+# a PowerShell stack trace naming service.ps1 line 55, instead of letting the
+# check below report "there is no origin remote" and name the fix.
+#
+# Found by CI on a real Windows runner. It cannot happen on Linux, and no amount
+# of reading the file would have shown it.
+function Invoke-GitQuiet {
+    param([string[]]$GitArgs)
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = 'SilentlyContinue'
+    try {
+        $out = (& git @GitArgs 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) { return $null }
+        return $out
+    } finally {
+        $ErrorActionPreference = $old
+    }
+}
+
 function Test-Credential {
-    $url = (& git -C $RepoRoot remote get-url origin 2>$null)
+    $url = Invoke-GitQuiet @('-C', $RepoRoot, 'remote', 'get-url', 'origin')
     if (-not $url) {
         Write-Warning "there is no origin remote. Git is the transport, so there is nowhere to push a log."
         return $false
