@@ -25,3 +25,15 @@ __pycache__/
 **/ops-logs/*.txt
 .agent.lock
 .agent-state
+
+# Terraform local state and provider cache. State for the templates under
+# skills/heliograph/toolkit/azure/*/ is never meant to be shared through this
+# repo - each deployer runs their own apply against their own estate - and a
+# .tfstate file can carry resource IDs and, depending on the resource,
+# attribute values that belong in nobody's git history. .terraform.lock.hcl
+# is NOT listed here: that one is meant to be committed, so every apply
+# resolves the same provider version.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan

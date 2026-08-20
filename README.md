@@ -139,6 +139,7 @@ reads the logs. What you decide is which question to ask next.
 | `agent.sh` | the unattended loop: watches for a request, runs it, pushes. Cancellable mid-run |
 | `caprun.sh` | wrap any ad-hoc command in the same capture and push |
 | `caplib.sh` | the shared capture, log and push functions |
+| `azure/` | eight templates for running the agent in Azure: ACI, Web App for Containers, Container Apps Job and a VM, each in bicep and Terraform |
 | `secret.sh` | carry a value the *other* way, as ciphertext, when the far side needs one |
 | `steps/env-snapshot.sh` | control-node baseline: OS, tools, auth, proxy, DNS, git |
 | `steps/net-probe.sh` | DNS, ICMP and a TCP matrix, in both directions |

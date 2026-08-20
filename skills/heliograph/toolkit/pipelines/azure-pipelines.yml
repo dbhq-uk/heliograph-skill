@@ -1,0 +1,77 @@
+# =============================================================================
+#  heliograph on an Azure DevOps self-hosted agent
+# =============================================================================
+#  Copy this into the TRANSPORT REPO as azure-pipelines.yml.
+#
+#  THIS FILE HAS NEVER BEEN RUN. The GitHub Actions equivalent beside it was
+#  deployed and proven end to end; this one was written from the same design
+#  and parses, but no Azure DevOps organisation was available to test it
+#  against. Treat the trigger and the loop guard as unverified, and watch the
+#  first few runs rather than trusting them.
+#
+#  The loop guard is the part most worth watching, for a reason specific to
+#  this platform: see the note below about Azure DevOps having no equivalent of
+#  GitHub's refusal to trigger on a GITHUB_TOKEN push.
+#
+#  No infrastructure. The agent already sits inside the estate with network
+#  reach and git credentials, because that is what a build agent is for.
+#  "Add a pipeline" is an approved activity; "deploy a container into
+#  production" is a change board conversation.
+#
+#  IT TRIGGERS ON THE REQUEST, NOT ON A SCHEDULE. A cron means waiting for the
+#  next tick for every step, so a hundred steps means a hundred waits. Pushing
+#  a request IS the trigger.
+#
+#  THE PATH FILTER IS LOAD-BEARING. This pipeline pushes a log back, and that
+#  push is a commit. Without the filter it would trigger itself, repeatedly.
+#  Logs land in ops-logs/ and the agent writes agent/status, so triggering only
+#  on agent/request means neither can re-fire it.
+#
+#  UNLIKE GITHUB ACTIONS, AZURE DEVOPS HAS NO BUILT-IN LOOP GUARD. GitHub
+#  refuses to trigger a workflow from a GITHUB_TOKEN push; Azure DevOps has no
+#  equivalent, so the path filter is the only structural guard and
+#  `***NO_CI***` in the commit message is the second. Do not remove either.
+# =============================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+      - 'task/*'
+  paths:
+    include:
+      - agent/request
+
+pr: none
+
+# One run at a time. Two requests pushed close together would otherwise race on
+# the same working directory.
+lockBehavior: sequential
+
+pool:
+  # The agent pool inside the estate. A Microsoft-hosted pool can reach nothing
+  # on your network and is only useful for proving the wiring.
+  name: Default
+
+jobs:
+  - job: run_request
+    displayName: Run the requested step
+    workspace:
+      clean: all
+    steps:
+      - checkout: self
+        # cap_push commits onto this branch, so the agent's own credential has
+        # to be left in the local git config for it to push back.
+        persistCredentials: true
+        fetchDepth: 0
+
+      - script: |
+          set -uo pipefail
+          git config user.name  "heliograph agent"
+          git config user.email "heliograph@$(hostname)"
+          # --once, not the polling loop. A pipeline job holds the agent for its
+          # whole duration, and polling git every five seconds for an hour would
+          # block everyone else's builds. The push already told us there is
+          # exactly one request to serve.
+          ./start.sh -- --once
+        displayName: heliograph

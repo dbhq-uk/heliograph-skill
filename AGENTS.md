@@ -22,6 +22,7 @@ skills/heliograph/SKILL.md          # the skill (agent-facing instructions)
 skills/heliograph/references/       # method, runner reference, step-writing, transport, secrets, remote repos, container
 skills/heliograph/scripts/          # bootstrap.sh - installs the toolkit into a transport repo
 skills/heliograph/toolkit/          # what gets copied out: start.sh, run.sh, agent.sh, caplib.sh, secret.sh, lib/, steps/, docker/
+skills/heliograph/toolkit/azure/    # bicep and Terraform for four Azure hosts. Never deployed from CI
 install.sh / install-codex.sh       # local symlink installers (Claude / Codex)
 tests/                              # plain-bash assertions; run ./tests/run-tests.sh
 ```

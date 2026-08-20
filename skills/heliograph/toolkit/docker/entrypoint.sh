@@ -409,12 +409,27 @@ main() {
   # it reached stdout in full. Refusing outright keeps both legitimate shapes
   # working - REPO_URL alone with pure start.sh passthrough, or a plain
   # positional URL alone - without ever guessing which one the caller meant.
-  if [ -n "${REPO_URL:-}" ] && [ $# -gt 0 ]; then
-    echo "entrypoint: both REPO_URL and a command-line argument were given - that is" >&2
-    echo "  ambiguous: is the first argument the repository URL, or the first argument" >&2
-    echo "  meant for start.sh? Use one or the other. Either set REPO_URL and pass only" >&2
-    echo "  start.sh's own arguments, or drop REPO_URL and give the URL as the first" >&2
-    echo "  argument here." >&2
+  # REPO_URL set means every positional is a start.sh argument. There is no
+  # ambiguity to resolve: the URL already arrived, so $1 cannot be it.
+  #
+  # An earlier version refused outright whenever both were present. That closed
+  # the leak below, but it also forbade the shape every container host actually
+  # uses - config in the environment, arguments on the command line - and the
+  # refusal's own message told the reader to do the thing it was refusing. It
+  # was found by deploying to ACI, where `command` can only carry arguments and
+  # REPO_URL can only be an environment variable, so the two are unavoidable
+  # together and the container crash-looped.
+  #
+  # The leak it was really guarding is narrower than the refusal was: a
+  # positional carrying a credential reaches start.sh, which prints an
+  # unrecognised option verbatim. So refuse THAT, and nothing else.
+  if [ -n "${REPO_URL:-}" ] && [ $# -gt 0 ] && url_has_credential "$1"; then
+    echo "entrypoint: REPO_URL is set, so the first argument is a start.sh argument," >&2
+    echo "  but it carries a credential. start.sh would print an unrecognised option" >&2
+    echo "  verbatim, putting that credential in the log. Pass the credential as" >&2
+    echo "  GIT_TOKEN, GIT_TOKEN_FILE or GIT_AUTH_HEADER instead." >&2
+    echo "  Note it has already reached this host's process table and, in a" >&2
+    echo "  container runtime, its inspect output. Treat it as compromised." >&2
     exit 2
   elif [ -n "${REPO_URL:-}" ]; then
     url="$REPO_URL"
@@ -652,6 +667,28 @@ main() {
   # running it as one - a signal sent to this container's pid 1 has to reach
   # start.sh (and, through its own exec, agent.sh) directly, or an operator's
   # `docker stop` would leave the real work orphaned and unsignalled.
+# A status endpoint, when a host asks for one.
+#
+# Off unless HELIOGRAPH_STATUS_PORT is set, so ACI, a VM and a plain docker run
+# are unaffected. Azure Web App for Containers needs it: that platform probes a
+# port and, when nothing answers, stops the site after 230 seconds. Measured.
+#
+# Started here rather than inside start.sh because it is a property of the
+# HOST, not of the loop. start.sh runs on laptops and jump boxes that want no
+# listening socket at all.
+#
+# Backgrounded before the exec below, so it survives becoming a child of
+# whatever start.sh turns into, and dies with the container when pid 1 exits.
+if [ -n "${HELIOGRAPH_STATUS_PORT:-}" ]; then
+  if [ -x /usr/local/bin/status-server.pl ]; then
+    HELIOGRAPH_WORKDIR="$WORKDIR" /usr/local/bin/status-server.pl &
+  else
+    echo "entrypoint: HELIOGRAPH_STATUS_PORT is set but status-server.pl is not" >&2
+    echo "  in this image. The port will not be answered, and a host that probes" >&2
+    echo "  one will stop this container." >&2
+  fi
+fi
+
   exec ./start.sh "$@"
 }
 

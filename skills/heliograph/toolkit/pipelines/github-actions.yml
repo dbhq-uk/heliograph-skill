@@ -1,0 +1,70 @@
+# =============================================================================
+#  heliograph on a GitHub Actions self-hosted runner
+# =============================================================================
+#  Copy this to .github/workflows/heliograph.yml IN THE TRANSPORT REPO.
+#
+#  No infrastructure. The runner is already inside the estate's network with
+#  git credentials, because that is what a build agent is for. "Add a workflow"
+#  is a normal, already-approved activity; "deploy a container into production"
+#  is a change board conversation. For a change-controlled estate that is the
+#  difference between next week and next quarter.
+#
+#  IT TRIGGERS ON THE REQUEST, NOT ON A SCHEDULE. A cron would mean waiting for
+#  the next tick for every step, and a hundred steps would mean a hundred waits.
+#  Pushing a request IS the trigger, so the latency is however long a runner
+#  takes to start.
+#
+#  THE PATH FILTER IS LOAD-BEARING, NOT TIDINESS. This job pushes a log back,
+#  and that push is a commit. Without the filter it would trigger itself, then
+#  do it again, until somebody noticed the bill. Logs land in ops-logs/ and the
+#  agent writes agent/status, so filtering to agent/request alone means neither
+#  can re-fire it. This is the same distinction agent.sh already makes: docs and
+#  step edits land on a task branch constantly and must not start a run.
+#
+#  GitHub gives a second guard for free: a push made with the built-in
+#  GITHUB_TOKEN does not trigger another workflow run. Two guards, because a
+#  runaway loop is expensive and embarrassing.
+# =============================================================================
+name: heliograph
+
+on:
+  push:
+    paths:
+      - 'agent/request'
+  workflow_dispatch:
+
+# One run at a time. Two requests pushed close together would otherwise race on
+# the same checkout. cancel-in-progress is FALSE on purpose: a step that is
+# halfway through changing something must not be killed to make room for a
+# queued request, which is the same reason agent.sh refuses to cancel on a new
+# id and queues instead.
+concurrency:
+  group: heliograph
+  cancel-in-progress: false
+
+jobs:
+  run-request:
+    # Change this to the label of a runner inside the estate. `ubuntu-latest`
+    # is GitHub-hosted and can reach nothing on your network, so it is only
+    # useful for proving the wiring.
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write        # the log has to be committed and pushed back
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The whole history, because cap_push commits onto this branch and a
+          # shallow clone cannot push cleanly.
+          fetch-depth: 0
+
+      - name: Run the requested step
+        run: |
+          git config user.name  "heliograph agent"
+          git config user.email "heliograph@users.noreply.github.com"
+          # --once, not the polling loop. A workflow run holds a runner for its
+          # whole duration, and polling git every five seconds for an hour
+          # would block everyone else's builds. The push already told us there
+          # is exactly one request to serve.
+          ./start.sh -- --once

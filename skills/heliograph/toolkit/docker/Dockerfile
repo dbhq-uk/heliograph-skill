@@ -150,6 +150,12 @@ RUN useradd --create-home --uid "${HELIOGRAPH_UID}" --shell /bin/bash heliograph
 # table, the branch checkout, the handover to agent.sh - only the clone that
 # has to happen before start.sh (and caplib.sh with it) exists to be run.
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+
+# The status server. Perl is already here - git pulls it in - so this adds no
+# package and no measurable size. It only runs when HELIOGRAPH_STATUS_PORT is
+# set, which is off unless a host needs it. Azure Web App for Containers does:
+# it probes a port and stops the site after 230s if nothing answers.
+COPY status-server.pl /usr/local/bin/status-server.pl
 RUN chmod 0755 /usr/local/bin/entrypoint.sh
 
 USER heliograph
