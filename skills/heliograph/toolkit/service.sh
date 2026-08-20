@@ -164,12 +164,20 @@ write_unit() {
   done
   # StartLimit* sit in [Unit], not [Service], on systemd 229 and newer.
   #
-  # Restart=always with a limit, deliberately. Always, because the whole point is
-  # a loop that is still there tomorrow and a transient network failure must not
-  # end it. Limited, because start.sh runs a preflight that refuses to start on a
-  # bad credential or a detached HEAD, and an unlimited restart would retry that
-  # every ten seconds forever, filling the journal with the same refusal instead
-  # of leaving it somewhere a person will read it.
+  # Restart=on-failure, NOT always, and this was learned the hard way.
+  #
+  # `stop: yes` in agent/request is how the far side ends a loop it can no longer
+  # reach, and agent.sh honours it by exiting 0. Under Restart=always systemd then
+  # started it straight back up, it read the same stop flag, exited 0 again, and
+  # round it went: measured at four "agent: stopped" commits in eighty seconds,
+  # each one PUSHED TO THE TRANSPORT REPO, until StartLimitBurst tripped and left
+  # the unit `failed` - which reads like a breakage when the agent had in fact
+  # done exactly what it was told.
+  #
+  # agent.sh runs forever unless it is deliberately stopped, so exit 0 means "I
+  # was told to stop" and must stick. A crash, or a preflight that refuses a bad
+  # credential, is non-zero and still restarts, which is the case Restart existed
+  # for. The limit stays so a genuinely broken start does not retry forever.
   cat > "$UNIT_PATH" <<EOF
 [Unit]
 Description=heliograph agent loop ($REPO_ROOT)
@@ -183,7 +191,7 @@ StartLimitBurst=5
 Type=simple
 WorkingDirectory=$REPO_ROOT
 ExecStart=/usr/bin/env bash $REPO_ROOT/start.sh$EXEC_TAIL
-Restart=always
+Restart=on-failure
 RestartSec=10
 
 # The loop is a diagnostic tool, not a service worth pre-empting real work for.

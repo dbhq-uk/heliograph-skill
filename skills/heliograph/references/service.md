@@ -69,6 +69,38 @@ The fallback is used only where there is no user systemd to talk to. It is a
 real answer, not a placeholder, but it does not survive a reboot and the install
 output says so rather than letting you assume otherwise.
 
+## A deliberate stop must stick
+
+The unit uses `Restart=on-failure`, **not** `Restart=always`, and that was learned
+by running one.
+
+`stop: yes` in `agent/request` is how the far side ends a loop it can no longer
+reach, and `agent.sh` honours it by exiting 0. Under `Restart=always` systemd
+started it straight back up, it read the same stop flag, exited again, and round
+it went. Measured on a live control node:
+
+```
+21:33:35  agent: stopped (egress-3)
+21:33:55  agent: stopped (egress-3)
+21:34:15  agent: stopped (egress-3)
+21:34:35  agent: stopped (egress-3)
+NRestarts=3   Active: activating (auto-restart)   status=0/SUCCESS
+```
+
+Every one of those is a commit **pushed to the transport repo**, and it only ends
+when `StartLimitBurst` trips and leaves the unit `failed` - which reads like a
+breakage when the agent had done exactly what it was told.
+
+`agent.sh` runs forever unless deliberately stopped, so exit 0 means "I was told
+to stop" and must stick. A crash, or a preflight refusing a bad credential, is
+non-zero and still restarts.
+
+One consequence worth knowing: systemd treats `SIGHUP`, `SIGINT`, `SIGTERM` and
+`SIGPIPE` as **clean** terminations, so `on-failure` will not restart after one.
+That is fine here. A systemd-managed process has no controlling terminal, so a
+closing ssh session cannot send it `SIGHUP` at all; what protects it is the
+detachment, not the restart policy.
+
 ## Lingering is the whole trick
 
 A systemd `--user` unit lives in the user manager, and without lingering that
