@@ -488,6 +488,62 @@ jobs:
           [ "$stamped" -gt 0 ] || { echo "::error::no timestamped lines in the log"; exit 1; }
           grep -q 'identity' "$log" || { echo "::error::the step's own output is missing"; exit 1; }
 
+      - name: service.ps1 registers, reports and removes a scheduled task
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $env:HELIOGRAPH_SERVICE_NAME = 'heliograph-ci'
+          Push-Location tw
+
+          # No remote yet, so it must refuse: a loop that cannot push is the
+          # expensive failure this check exists to prevent.
+          $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\service.ps1 install 2>&1 | Out-String
+          if ($out -notmatch 'no origin remote') {
+            Write-Output $out
+            Write-Output "::error::service.ps1 did not refuse to install without a remote"
+            Pop-Location; exit 1
+          }
+          Write-Output "refused without a remote, correctly"
+
+          # A local bare remote needs no credential at all, so this must be
+          # accepted rather than questioned.
+          git init -q --bare ..\origin.git
+          git remote add origin ..\origin.git
+          git add -A 2>&1 | Out-Null
+          git commit -qm init 2>&1 | Out-Null
+          $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\service.ps1 install 2>&1 | Out-String
+          Write-Output $out
+          $task = Get-ScheduledTask -TaskName 'heliograph-ci' -ErrorAction SilentlyContinue
+          if (-not $task) {
+            Write-Output "::error::service.ps1 install did not register a scheduled task"
+            Pop-Location; exit 1
+          }
+          Write-Output "registered, state=$($task.State)"
+
+          # The setting that matters most: the default execution time limit is
+          # three days, after which Windows stops the task and the loop quietly
+          # ends. Zero means no limit, and it is asserted from the registered
+          # task rather than from the source that asked for it.
+          $limit = (Get-ScheduledTask -TaskName 'heliograph-ci').Settings.ExecutionTimeLimit
+          Write-Output "ExecutionTimeLimit: [$limit]"
+          if ($limit -and $limit -ne 'PT0S') {
+            Write-Output "::error::the task has a time limit of $limit, so the loop would stop on its own"
+            Pop-Location; exit 1
+          }
+
+          $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\service.ps1 status 2>&1 | Out-String
+          if ($out -notmatch 'heliograph-ci') {
+            Write-Output $out
+            Write-Output "::error::status did not report the task"; Pop-Location; exit 1
+          }
+
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\service.ps1 uninstall 2>&1 | Out-String | Write-Output
+          if (Get-ScheduledTask -TaskName 'heliograph-ci' -ErrorAction SilentlyContinue) {
+            Write-Output "::error::uninstall left the task registered"; Pop-Location; exit 1
+          }
+          Write-Output "registered, reported and removed"
+          Pop-Location
+
       - name: The suite's Windows-relevant files, unskipped
         shell: bash
         run: |

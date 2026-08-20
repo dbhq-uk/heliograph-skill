@@ -255,3 +255,4 @@ store the far side has. Details, and why each guard is there:
 | [references/remote-repo.md](references/remote-repo.md) | changing a repo that is also on the far side |
 | [references/container.md](references/container.md) | running the control node in a container: what ships, why, and the honest limits |
 | [references/windows.md](references/windows.md) | a Windows control node, steps written in PowerShell, and what line endings really do |
+| [references/service.md](references/service.md) | making the loop outlive the session that started it |
