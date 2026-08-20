@@ -77,21 +77,84 @@ az network vnet subnet update -g RG --vnet-name VNET -n SUBNET \
 
 A Container Apps environment also needs a reasonably large subnet. A /23 worked.
 
-### VMs may not be creatable at all on a Sponsorship subscription
+### A VNet with no NAT gateway has no outbound internet
 
-Every VM size tried was refused with `SkuNotAvailable`: five sizes
-(`Standard_B2s`, `B1ms`, `D2s_v3`, `D2as_v5`, `B2ats_v2`) across four regions
-(uksouth, westeurope, northeurope, eastus), and a Spot instance as well.
+This is the one that will cost you the most time, and it applies to every host
+here, not just VMs.
 
-This is not a quota problem, and reading quota will mislead you. The quota was
-there: `Standard BS Family vCPUs: 0/65`, `Total Regional vCPUs: 0/65`, and
-`Virtual Machines: 0/25000`. `SkuNotAvailable` means the SKU is not offered to
-this subscription, which is a different thing and is not fixed by asking for
-more quota.
+Azure removed default outbound internet access. A VM in a subnet with no public
+IP and no NAT gateway cannot reach anything outside the VNet. If your transport
+repo is on github.com, the clone hangs and then fails:
 
-If you hit this, the VM templates in this repo have never been run. Test them
-before trusting them, and expect to raise a support request or use a different
-subscription.
+```
+fatal: unable to access 'https://github.com/org/transport.git/':
+Failed to connect to github.com port 443 after 133840 ms: Couldn't connect to server
+```
+
+Two minutes of nothing, then a connection error. It does not look like a network
+policy problem, it looks like github being down.
+
+Fix it with a NAT gateway on the subnet:
+
+```
+az network public-ip create -g RG -n pip-nat --sku Standard --allocation-method Static
+az network nat gateway create -g RG -n nat-hg --public-ip-addresses pip-nat
+az network vnet subnet update -g RG --vnet-name VNET -n SUBNET --nat-gateway nat-hg
+```
+
+Then check from inside before blaming anything else:
+
+```
+az vm run-command invoke -g RG -n VM --command-id RunShellScript \
+  --scripts "curl -s -o /dev/null -w '%{http_code}' -m 20 https://github.com"
+```
+
+None of this applies if the transport repo is on a private git host inside the
+same VNet, which is the case this tool is really for. It applies whenever the
+repo is on the public internet.
+
+### VM SKU availability is per region, and can be zero
+
+`SkuNotAvailable` is not a quota error and reading quota will send you the wrong
+way. On the subscription used to test this, quota was present and unused:
+
+```
+Standard BS Family vCPUs:  0/65
+Total Regional vCPUs:      0/65
+Virtual Machines:          0/25000
+```
+
+And yet every VM size failed. The reason only shows in the SKU list itself:
+
+```
+type: Location  reason: NotAvailableForSubscription
+type: Zone      reason: NotAvailableForSubscription
+```
+
+`NotAvailableForSubscription` means the SKU is not offered to this subscription
+in that region. More quota does not fix it.
+
+It is also **per region**, and the difference is total:
+
+| region | unrestricted VM SKUs |
+|---|---|
+| uksouth | 0 of 1227 |
+| westeurope | 583 of 1314 |
+| eastus | 508 of 1356 |
+| centralus | 625 of 1294 |
+
+So do not conclude that a subscription cannot run VMs because one region refuses
+every size. Check another region. Testing the same old SKU in four regions is
+what misled us: `Standard_B2s` happens to be restricted in all of them, while
+hundreds of current-generation sizes are available.
+
+List what is actually available rather than guessing:
+
+```
+az rest --method get --url "https://management.azure.com/subscriptions/SUB/providers/Microsoft.Compute/skus?api-version=2021-07-01&\$filter=location eq 'westeurope'"
+```
+
+then filter for entries with no `restrictions`. `Standard_F1as_v7` worked.
 
 ### App Service kills a container that does not listen, so we serve status
 
