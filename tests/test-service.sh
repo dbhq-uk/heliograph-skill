@@ -157,20 +157,29 @@ if [ -n "$pid" ] && [ "$pid" != "0" ] && kill -0 "$pid" 2>/dev/null; then
     t_no "it shares this shell's session ($their_sess), so it would die with the connection"
   fi
 
-  # The bug itself, reproduced against the running service.
-  kill -HUP "$pid" 2>/dev/null
-  sleep 3
-  still_up=no
+  # THE SIGHUP TEST IS ONLY MEANINGFUL FOR THE FALLBACK, and pretending otherwise
+  # would assert systemd's signal policy rather than anything this toolkit does.
+  #
+  # systemd treats SIGHUP, SIGINT, SIGTERM and SIGPIPE as CLEAN terminations, so
+  # Restart=on-failure deliberately does not bring the unit back after one. That
+  # is correct here: a systemd-managed process has no controlling terminal, so a
+  # closing ssh session can never send it SIGHUP in the first place. What
+  # protects it is the detachment asserted just above, not a restart policy.
+  #
+  # Restart=always would "pass" a direct-SIGHUP test and cost far more: it also
+  # undoes `stop: yes`, which is checked below.
   if [ "$say_mech" = "systemd --user" ]; then
     st="$(XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
           systemctl --user is-active "$HELIOGRAPH_SERVICE_NAME.service" 2>/dev/null)"
-    case "$st" in active|activating) still_up=yes ;; esac
-    if [ "$still_up" = yes ]; then
-      t_ok "SIGHUP does not end it: systemd has it running or restarting ($st)"
+    if [ "$st" = "active" ]; then
+      t_ok "the unit is active, and its detachment above is what makes a closing session harmless"
     else
-      t_no "the unit is $st after a SIGHUP, so it did not survive"
+      t_no "the unit is $st when it should be running"
     fi
   else
+    kill -HUP "$pid" 2>/dev/null
+    sleep 3
+    still_up=no
     kill -0 "$pid" 2>/dev/null && still_up=yes
     if [ "$still_up" = yes ]; then
       t_ok "SIGHUP does not end it: still running as pid $pid"
@@ -214,6 +223,68 @@ assert_contains "status shows which branch it is on, so nobody has to guess" "ta
 git -C "$TR" checkout -q main 2>/dev/null
 out="$( cd "$TR" && ./service.sh install 2>&1 )"
 pid="$(cat "$TR/.agent-service.pid" 2>/dev/null || true)"
+
+# =============================================================================
+#  4c. a deliberate stop must stick
+# =============================================================================
+# `stop: yes` in agent/request is how the far side ends a loop it can no longer
+# reach, and agent.sh honours it by exiting 0. Under Restart=always systemd
+# started it straight back up, it read the same stop flag, exited again, and
+# round it went: four "agent: stopped" commits in eighty seconds, each one
+# PUSHED TO THE TRANSPORT REPO, until StartLimitBurst tripped and left the unit
+# `failed` - which reads like a breakage when the agent had done as it was told.
+#
+# Only a real run found this. The unit file was read in review and looked fine.
+if [ "$say_mech" = "systemd --user" ]; then
+  unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$HELIOGRAPH_SERVICE_NAME.service"
+  if [ -f "$unit" ]; then
+    restart="$(grep -m1 '^Restart=' "$unit" | cut -d= -f2)"
+    assert_eq "the unit restarts on failure only, so a deliberate stop is not undone"       "on-failure" "$restart"
+  else
+    t_no "no unit file at $unit to check the restart policy in"
+  fi
+fi
+
+# And the behaviour, not just the setting. A clean exit must leave it stopped.
+( cd "$TR" && ./service.sh stop >/dev/null 2>&1; ./service.sh uninstall >/dev/null 2>&1 )
+git -C "$TR" checkout -q main 2>/dev/null
+printf 'id: stoptest\nstop: yes\n' > "$TR/agent/request"
+git -C "$TR" add agent/request >/dev/null 2>&1
+git -C "$TR" commit -qm "request: stop" >/dev/null 2>&1
+git -C "$TR" push -q origin main >/dev/null 2>&1
+
+( cd "$TR" && ./service.sh install >/dev/null 2>&1 )
+sleep 12
+still=""
+if [ "$say_mech" = "systemd --user" ]; then
+  still="$(XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
+           systemctl --user is-active "$HELIOGRAPH_SERVICE_NAME.service" 2>/dev/null)"
+  case "$still" in
+    active|activating)
+      t_no "the agent was told to stop and systemd keeps restarting it ($still), which pushes a commit every time" ;;
+    *)
+      t_ok "a deliberate stop sticks: the unit is $still rather than being restarted into the same stop flag" ;;
+  esac
+else
+  p2="$(cat "$TR/.agent-service.pid" 2>/dev/null || true)"
+  if [ -n "$p2" ] && kill -0 "$p2" 2>/dev/null; then
+    t_no "the agent was told to stop but is still running as $p2"
+  else
+    t_ok "a deliberate stop sticks under the fallback too"
+  fi
+fi
+( cd "$TR" && ./service.sh stop >/dev/null 2>&1; ./service.sh uninstall >/dev/null 2>&1 )
+# Clear the stop flag and leave a running service behind, because section 5 is
+# about stopping one and there would otherwise be nothing there to stop.
+printf 'id:\nstep:\n' > "$TR/agent/request"
+git -C "$TR" add agent/request >/dev/null 2>&1
+git -C "$TR" commit -qm "request: clear" >/dev/null 2>&1
+git -C "$TR" push -q origin main >/dev/null 2>&1
+( cd "$TR" && ./service.sh install >/dev/null 2>&1 )
+sleep 3
+pid="$(XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
+       systemctl --user show "$HELIOGRAPH_SERVICE_NAME.service" -p MainPID --value 2>/dev/null)"
+[ -n "$pid" ] && [ "$pid" != "0" ] || pid="$(cat "$TR/.agent-service.pid" 2>/dev/null || true)"
 
 # =============================================================================
 #  5. and it can be stopped and removed again
