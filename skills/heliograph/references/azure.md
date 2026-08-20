@@ -627,6 +627,12 @@ GitHub gives a second guard for free, because a push made with the built-in
 equivalent**, so there the path filter is the only structural guard and
 `***NO_CI***` in the commit message is the second.
 
+**The GitHub Actions file is proven. The Azure DevOps one has never been run.**
+No organisation was available to test it against. It was written from the same
+design and it parses, but the trigger and the loop guard are unverified, and the
+loop guard is exactly the part that has no platform safety net on Azure DevOps.
+Watch the first few runs.
+
 **Use `--once`, never the polling loop.** A pipeline job holds the agent for its
 whole duration, and polling git for an hour would block everyone else's builds.
 

@@ -3,6 +3,16 @@
 # =============================================================================
 #  Copy this into the TRANSPORT REPO as azure-pipelines.yml.
 #
+#  THIS FILE HAS NEVER BEEN RUN. The GitHub Actions equivalent beside it was
+#  deployed and proven end to end; this one was written from the same design
+#  and parses, but no Azure DevOps organisation was available to test it
+#  against. Treat the trigger and the loop guard as unverified, and watch the
+#  first few runs rather than trusting them.
+#
+#  The loop guard is the part most worth watching, for a reason specific to
+#  this platform: see the note below about Azure DevOps having no equivalent of
+#  GitHub's refusal to trigger on a GITHUB_TOKEN push.
+#
 #  No infrastructure. The agent already sits inside the estate with network
 #  reach and git credentials, because that is what a build agent is for.
 #  "Add a pipeline" is an approved activity; "deploy a container into
