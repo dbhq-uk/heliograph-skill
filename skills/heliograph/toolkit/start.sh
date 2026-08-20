@@ -159,6 +159,39 @@ preflight() {
     report FAIL git "git is the transport, so nothing here works without it. Install git and put it first on PATH"
   fi
 
+  # Line endings. A transport repo cloned on Windows arrives with CRLF, because
+  # Git for Windows sets core.autocrlf=true at install time.
+  #
+  # WHETHER THAT MATTERS DEPENDS ENTIRELY ON WHICH BASH THIS IS, so probe it
+  # rather than assume. Measured both ways: on Linux, bash treats the CR as part
+  # of the token, and the sourced case is the nasty one - caplib.sh reports
+  # "set: pipefail: invalid option name" and CARRIES ON with neither -u nor
+  # pipefail applied. Git for Windows' bash strips CR transparently and behaves
+  # identically to LF, pipefail and set -u included. Reporting a blanket failure
+  # would therefore refuse to start on a Windows control node that works
+  # perfectly, which is worse than not checking at all.
+  local probe tolerant=no crlf
+  probe="$(mktemp 2>/dev/null || printf '/tmp/hg-crlf-probe.%s' "$$")"
+  printf 'hg_crlf_probe=1\r\n' > "$probe"
+  # shellcheck disable=SC1090
+  if ( . "$probe" 2>/dev/null; [ "${hg_crlf_probe:-}" = "1" ] ); then tolerant=yes; fi
+  rm -f "$probe"
+
+  crlf="$(grep -lr $'\r' --include='*.sh' --exclude-dir=.git . 2>/dev/null |
+            sed 's|^\./||' | sort | tr '\n' ' ')"
+
+  if [ "$tolerant" = yes ]; then
+    if [ -n "$crlf" ] && [ ! -e .gitattributes ]; then
+      report warn "line endings" "this bash strips CR so the loop runs fine here, but the checkout holds CRLF and there is no .gitattributes pinning it. A Linux control node or the container cloning this repo would fail on those files. Re-run bootstrap.sh to install .gitattributes"
+    else
+      report ok "line endings" "this bash tolerates CR, so a CRLF checkout runs here"
+    fi
+  elif [ -z "$crlf" ]; then
+    report ok "line endings" "LF throughout, so every script can be sourced and run"
+  else
+    report FAIL "line endings" "CRLF in: ${crlf% }. This bash does not tolerate CR: an executed script dies with 'bash\\r: No such file or directory' and a sourced one loses 'set -uo pipefail' WITHOUT stopping. Fix with 'git config --global core.autocrlf false' and clone again - the checkout is disposable and anything already pushed is safe"
+  fi
+
   # THE load-bearing check, and the reason this script exists.
   if [ "$(printf 'x\n' | sed -u 's/x/y/' 2>/dev/null)" = "y" ]; then
     report ok "sed -u" "the capture can run unbuffered"

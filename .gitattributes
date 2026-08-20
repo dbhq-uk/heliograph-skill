@@ -1,0 +1,22 @@
+# Line endings for this repository.
+#
+# The transport repo gets its own copy of this, shipped as toolkit/gitattributes
+# and installed by bootstrap.sh. This one covers the skill repo, so that a
+# contributor working on Windows cannot commit a toolkit script with CRLF in it
+# and ship the breakage to every transport repo bootstrapped afterwards.
+#
+# The failure it prevents is documented in full in toolkit/gitattributes. The
+# short version: Git for Windows' bash tolerates CRLF perfectly well, so the
+# harm is never to the Windows machine that produced it - it is to every Linux
+# clone afterwards, where a sourced CRLF file does not stop, it silently loses
+# `set -uo pipefail`.
+
+* text=auto eol=lf
+
+*.sh   text eol=lf
+*.ps1  text eol=lf
+*.bash text eol=lf
+
+# Shipped without a dot on purpose; still a shell-adjacent text file.
+gitignore     text eol=lf
+gitattributes text eol=lf

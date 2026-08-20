@@ -19,9 +19,9 @@ Every rule in here was paid for by an investigation that went wrong first.
 ```
 .claude-plugin/plugin.json          # plugin manifest
 skills/heliograph/SKILL.md          # the skill (agent-facing instructions)
-skills/heliograph/references/       # method, runner reference, step-writing, transport, secrets, remote repos, container
+skills/heliograph/references/       # method, runner reference, step-writing, transport, secrets, remote repos, container, windows
 skills/heliograph/scripts/          # bootstrap.sh - installs the toolkit into a transport repo
-skills/heliograph/toolkit/          # what gets copied out: start.sh, run.sh, agent.sh, caplib.sh, secret.sh, lib/, steps/, docker/
+skills/heliograph/toolkit/          # what gets copied out: start.sh, run.sh, agent.sh, agent.ps1, caplib.sh, secret.sh, lib/, steps/, docker/
 skills/heliograph/toolkit/azure/    # bicep and Terraform for four Azure hosts. Never deployed from CI
 install.sh / install-codex.sh       # local symlink installers (Claude / Codex)
 tests/                              # plain-bash assertions; run ./tests/run-tests.sh
@@ -104,6 +104,24 @@ precedent for duplicating anything else. The unprivileged user the image
 runs as is not a security boundary either: anyone who can run a command in
 it can `sudo` to root. Full account:
 [`skills/heliograph/references/container.md`](skills/heliograph/references/container.md).
+
+**7. `agent.ps1` is a launcher, never a port.** It finds the bash that Git for
+Windows installed and hands over to `start.sh`. It reimplements nothing, and
+adding a PowerShell copy of the capture would break constraint 3 in the way that
+matters least visibly: a buffered port gives every line the same timestamp,
+which reads like a working log. A step written in PowerShell is a different
+thing and is fine - `ps_step` in `run.sh` runs one through the ordinary capture,
+because a step is just an argv array that prints to stdout.
+
+The toolkit ships `gitattributes` (no dot, same trick as `gitignore`) pinning the
+transport repo to LF. This is **not** to protect Windows from itself: Git for
+Windows' bash strips CR and runs a CRLF checkout perfectly well. It is to stop
+CRLF that gets committed from breaking every Linux clone afterwards, where a
+sourced file loses `set -uo pipefail` without stopping. `start.sh` probes
+whether the current bash tolerates CR rather than assuming, because a blanket
+check refuses to start a Windows control node that works. Full account, with the
+measurements:
+[`skills/heliograph/references/windows.md`](skills/heliograph/references/windows.md).
 
 ## Conventions
 

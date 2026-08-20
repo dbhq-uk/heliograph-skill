@@ -254,3 +254,4 @@ store the far side has. Details, and why each guard is there:
 | [references/secrets.md](references/secrets.md) | `secret.sh`, for a value that has to reach the far side |
 | [references/remote-repo.md](references/remote-repo.md) | changing a repo that is also on the far side |
 | [references/container.md](references/container.md) | running the control node in a container: what ships, why, and the honest limits |
+| [references/windows.md](references/windows.md) | a Windows control node, steps written in PowerShell, and what line endings really do |

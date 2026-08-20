@@ -277,6 +277,79 @@ jobs:
             exit 1
           fi
 
+  # The same argument as the container job, for the same reason.
+  # tests/test-powershell.sh skips its ps_step half when no PowerShell is on
+  # PATH, which is right on a Linux developer box and wrong to let pass here.
+  #
+  # It matters more than usual because NOTHING ELSE IN CI READS A .ps1 AT ALL.
+  # bash -n and shellcheck sweep *.sh and step straight over agent.ps1 and the
+  # PowerShell steps, so without this job a syntax error in one of them would
+  # go green here and only surface on a Windows control node, which is the one
+  # machine nobody can log in to. That is the exact failure this repo exists to
+  # prevent.
+  #
+  # GitHub-hosted ubuntu-latest runners ship pwsh, so the skip path should never
+  # trigger. If it does, that is itself the finding.
+  powershell:
+    name: PowerShell parses, and its tests run unskipped
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Every .ps1 in the repo parses
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Path . -Filter *.ps1 -Recurse -File |
+                   Where-Object { $_.FullName -notmatch '[\\/]\.git[\\/]' }
+          if ($files.Count -eq 0) {
+            Write-Output "::error::no .ps1 files found, so this job checked nothing"
+            exit 1
+          }
+          $bad = 0
+          foreach ($f in $files) {
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $f.FullName, [ref]$null, [ref]$errors)
+            if ($errors -and $errors.Count -gt 0) {
+              $bad++
+              foreach ($e in $errors) {
+                Write-Output "::error file=$($f.FullName),line=$($e.Extent.StartLineNumber)::$($e.Message)"
+              }
+            } else {
+              Write-Output "ok   $($f.FullName)"
+            }
+          }
+          Write-Output "$($files.Count) file(s) parsed, $bad bad"
+          exit $bad
+
+      - name: Run tests/test-powershell.sh and refuse a silent skip
+        run: |
+          set +e
+          ./tests/test-powershell.sh 2>&1 | tee /tmp/test-powershell.out
+          rc="${PIPESTATUS[0]}"
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::tests/test-powershell.sh failed (exit $rc)"
+            exit 1
+          fi
+          # The file's own loud-skip banner, and assert.sh's SKIP lines.
+          if grep -q '^SKIP' /tmp/test-powershell.out; then
+            echo "::error::tests/test-powershell.sh skipped something instead of running it. ubuntu-latest ships pwsh, so investigate the runner rather than ignore this."
+            exit 1
+          fi
+          # The count, which does not depend on anyone keeping a future skip
+          # message uppercase.
+          if ! grep -qE '^test-powershell\.sh: [0-9]+ passed, [0-9]+ failed, 0 skipped$' /tmp/test-powershell.out; then
+            echo "::error::tests/test-powershell.sh did not report '0 skipped' (or printed no summary). Assertions that did not run cannot be treated as assertions that passed."
+            exit 1
+          fi
+          # And the whole-file early exit, which returns 0 and prints its own
+          # banner rather than a SKIP line.
+          if grep -q 'SKIPPING every PowerShell assertion' /tmp/test-powershell.out; then
+            echo "::error::tests/test-powershell.sh found no PowerShell interpreter and skipped its ps_step half."
+            exit 1
+          fi
+
   # Single required check for branch protection. Adding a job above does not mean
   # remembering to add it to the protection rule - it only needs listing here.
   ci-ok:
@@ -289,6 +362,7 @@ jobs:
       - toolkit
       - tests
       - container
+      - powershell
     steps:
       - name: Fail if any job did not succeed
         run: |

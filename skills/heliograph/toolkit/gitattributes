@@ -1,0 +1,48 @@
+# Line endings for the transport repo.
+#
+# This file ships as `gitattributes`, without the dot, for the same reason the
+# ignore file does: it has to govern the transport repo rather than the skill
+# repo carrying it. bootstrap.sh restores the dot on the way out. Do not "fix"
+# the name.
+#
+# WHY THIS EXISTS, stated accurately, because the obvious version of the story
+# is wrong. Git for Windows sets core.autocrlf=true at install time, so a
+# transport repo cloned on Windows arrives with CRLF throughout. That on its
+# own is harmless: Git for Windows' bash strips CR transparently and behaves
+# exactly as it does on LF, pipefail and set -u included. Measured on Windows
+# Server 2022 with Git 2.55, both executed and sourced.
+#
+# The damage is to the OTHER machines, and it is what makes this a
+# cross-platform repo problem rather than a Windows one. If CRLF ever gets
+# COMMITTED - a contributor with autocrlf=false, a file written by a Windows
+# editor, a step that generates one - then every Linux clone of this repo gets
+# it too, and Linux bash does not forgive it:
+#
+#   Executed, it stops with a clear complaint:
+#       /usr/bin/env: 'bash\r': No such file or directory
+#
+#   Sourced, which is how caplib.sh is loaded, it does NOT stop:
+#       caplib.sh: line 2: set: pipefail: invalid option name
+#   The CR attaches to `pipefail`, so the whole `set -uo pipefail` call fails
+#   and NEITHER option is applied. The loop then runs with unset-variable
+#   checking and pipefail both silently off, on the machine you cannot log in
+#   to, and the first thing you learn about it is a log that is wrong rather
+#   than absent.
+#
+# So this file is not protecting Windows from itself. It is what lets a Windows
+# operator and a Linux container share one transport repo: the content stays LF
+# whatever anyone's core.autocrlf happens to be, and that setting belongs to
+# whoever cloned rather than to us.
+
+# text=auto still lets git detect and leave binaries alone.
+* text=auto eol=lf
+
+# Spelled out for the files whose breakage is silent, so that grepping this
+# file for the extension that just failed you finds an answer.
+*.sh   text eol=lf
+*.ps1  text eol=lf
+*.bash text eol=lf
+
+# Captured logs are the product of this repo and are read on every platform.
+*.txt  text eol=lf
+*.log  text eol=lf
