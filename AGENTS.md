@@ -153,6 +153,15 @@ jq empty .claude-plugin/plugin.json
 ./tests/run-tests.sh
 ```
 
+A `windows` job runs the toolkit on `windows-latest`, and it is not decoration:
+`agent.ps1`'s registry lookup for bash, `ps_step` against Windows PowerShell 5.1
+rather than pwsh 7, the line-ending probe's CR-tolerant branch and
+`.gitattributes` against a real `core.autocrlf=true` all execute nowhere else. It
+found two portability bugs in this repo's own tests on its first run. Note that
+`grep` cannot be trusted to find a CR under Git bash: use `tr -cd '\r' | wc -c`,
+or compare a file's size on disk with its blob. See
+[`skills/heliograph/references/windows.md`](skills/heliograph/references/windows.md).
+
 CI runs all five over that same corpus, `bash -n` and `shellcheck` included, plus
 the `SKILL.md` frontmatter check, the em dash, hardcoded-install-path and
 probe-truncation greps, both installers, and an end-to-end capture through a

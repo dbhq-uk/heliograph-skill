@@ -336,6 +336,34 @@ in the toolkit and a second fix would be a second thing to keep in step. Only th
 carriage-return progress, and deleting those would silently join output that was
 never on the same line.
 
+**Which control node you are on decides whether that fix does anything.** Under
+Git for Windows' bash the MSYS runtime normalises the line ending further up the
+pipeline, before `cap_run` ever sees it, so a Windows control node never had this
+problem. On Linux the CR arrives intact and `cap_run` is what removes it. The
+container and every host under `toolkit/azure/` are Linux, so that is the case
+that matters in practice.
+
+`tests/test-remote.sh` probes for this rather than assuming it, in the same shape
+as `start.sh`'s CR-tolerance check: it asks whether a CRLF survives a pipe on
+this shell, and only demands that reverting `cap_run` puts the CRs back where the
+answer is yes.
+
+## Counting CR bytes on Git bash, which is harder than it looks
+
+`grep` is not a reliable way to find a CR under Git for Windows. MSYS grep and
+MSYS shell redirection disagree about text translation, so `grep -lrU $'\r'`
+reported **every** `.sh` file in a checkout as CRLF while `tr`, `git status` and
+the blob all agreed the tree was clean LF. The same mistake in
+`tests/test-remote.sh` passed on Linux and failed only on Windows.
+
+Two things that do work:
+
+- `tr -cd '\r' < file | wc -c` counts CR bytes and agreed with git every time.
+- Comparing the file's size on disk to its blob's size. A file rewritten to CRLF
+  is longer by exactly its line count, and neither `stat` nor a pipe translates
+  anything. This is what CI uses to prove `.gitattributes` held, and it reported
+  32 files byte-identical to their blobs against a real `core.autocrlf=true`.
+
 ### What is still not covered
 
 `rt_ps` needs the target to run an SSH server. A Windows estate that only
