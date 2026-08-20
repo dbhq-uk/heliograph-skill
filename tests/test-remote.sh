@@ -63,21 +63,32 @@ else
   # be satisfied by an empty capture.
   assert_contains "the step's output reached the log" "windows line one" "$(cat "$LOG")"
 
-  trailing="$(grep -cE $'\r$' "$LOG" || true)"
-  assert_eq "no captured line ends in a CR" "0" "$trailing"
-
-  # The other half, and what stops the assertion above being satisfied by simply
-  # deleting every CR. A bare CR mid-line is a terminal doing carriage-return
-  # progress, and joining those lines would misrepresent what the machine did.
-  midline="$(grep -c $'midline\rprogress' "$LOG" || true)"
-  if [ "$midline" = "1" ]; then
-    t_ok "a mid-line CR is left alone, so progress output is not silently joined"
-  else
-    t_no "the mid-line CR was stripped too, which loses the distinction between a line ending and terminal progress"
-  fi
-
+  # COUNT THE CR BYTES, do not grep for them. On Git for Windows' bash, MSYS
+  # grep and MSYS shell redirection disagree about text translation, so
+  # `grep -cE $'\r$'` reported 20 CRLF line endings in this very log while `tr`,
+  # `git status` and the blob all agreed there was exactly one CR in it. `tr` is
+  # the one that matched git, so `tr` is what this file uses. The first version
+  # of these assertions used grep and failed only on Windows, which is precisely
+  # the platform they exist to describe.
+  #
+  # One number says everything. The step writes two CRLF lines and one deliberate
+  # mid-line CR, so:
+  #     1  cap_run stripped both trailing CRs and kept the mid-line one, correct
+  #     3  nothing was stripped
+  #     0  every CR was deleted, including the mid-line one, which would join
+  #        output that was never on the same line
   total_cr="$(tr -cd '\r' < "$LOG" | wc -c | tr -d ' ')"
-  assert_eq "exactly one CR survives, the deliberate mid-line one" "1" "$total_cr"
+  assert_eq "exactly one CR survives: both trailing ones stripped, the mid-line one kept" "1" "$total_cr"
+
+  # And the same property stated without counting anything, so a wrong count
+  # cannot pass unnoticed. If the mid-line CR had been deleted, the two halves
+  # would have been joined into one word.
+  if grep -q 'midlineprogress' "$LOG"; then
+    t_no "the mid-line CR was deleted, joining output that was never on one line"
+  else
+    t_ok "the two halves of the progress line are still separated by their CR"
+  fi
+  assert_contains "the progress line itself survived intact" "progress on one line" "$(cat "$LOG")"
 fi
 
 # Mutation, run for real: put cap_run back the way it was and require the CR to
@@ -90,11 +101,13 @@ else
   rm -f "$TR"/ops-logs/crlf-*.txt
   ( cd "$TR" && PUSH=0 ./run.sh crlf >/dev/null 2>&1 )
   MLOG="$(ls -t "$TR"/ops-logs/crlf-*.txt 2>/dev/null | head -1)"
-  mut_trailing="$(grep -cE $'\r$' "$MLOG" 2>/dev/null || true)"
-  if [ "${mut_trailing:-0}" -gt 0 ]; then
-    t_ok "reverting cap_run puts the trailing CR back ($mut_trailing lines), so the assertion can fail"
+  mut_cr="$(tr -cd '\r' < "$MLOG" 2>/dev/null | wc -c | tr -d ' ')"
+  if [ "${mut_cr:-0}" -eq 3 ]; then
+    t_ok "reverting cap_run puts both trailing CRs back (3 total), so the assertion above can fail"
+  elif [ "${mut_cr:-0}" -gt 1 ]; then
+    t_ok "reverting cap_run puts a trailing CR back ($mut_cr total), so the assertion above can fail"
   else
-    t_no "reverting cap_run changed nothing, so cap_run is not what strips the CR"
+    t_no "reverting cap_run left $mut_cr CR bytes, so cap_run is not what strips them and the check above proves nothing"
   fi
 fi
 cp "$WORK/caplib.bak" "$TR/caplib.sh"
