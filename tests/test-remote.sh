@@ -93,10 +93,19 @@ fi
 
 # Mutation, run for real: put cap_run back the way it was and require the CR to
 # return. If it does not, nothing above is testing the fix.
+#
+# The pattern matches `do l=<anything without a semicolon>; printf` on purpose.
+# Spelling the CR out means writing $'\r' inside a sed expression inside a shell
+# quote, and the first version of this got that wrong in a way that only showed
+# up on Windows: the substitution silently matched nothing, the mutation did not
+# apply, and the test then reported that cap_run was not doing the stripping.
+# `[^;]*` sidesteps the quoting entirely.
 cp "$TR/caplib.sh" "$WORK/caplib.bak"
-sed -i 's|do l="${l%\$'"'"'\\r'"'"'}"; printf|do printf|' "$TR/caplib.sh"
-if grep -q 'l="${l%' "$TR/caplib.sh"; then
-  t_no "the mutation did not apply, so the check below proves nothing about cap_run"
+before_sum="$(cksum < "$TR/caplib.sh")"
+sed -i 's/do l=[^;]*; printf/do printf/' "$TR/caplib.sh"
+after_sum="$(cksum < "$TR/caplib.sh")"
+if [ "$before_sum" = "$after_sum" ]; then
+  t_no "the mutation did not change caplib.sh at all, so the check below would prove nothing about cap_run"
 else
   rm -f "$TR"/ops-logs/crlf-*.txt
   ( cd "$TR" && PUSH=0 ./run.sh crlf >/dev/null 2>&1 )
