@@ -183,6 +183,39 @@ else
 fi
 
 # =============================================================================
+#  4b. arguments reach start.sh
+# =============================================================================
+# The first version hardcoded start.sh with no arguments, so a service-managed
+# loop could not be put on a task branch - and branch per task is how this whole
+# skill works. It also ruled out --interval and anything after --. Nothing in the
+# suite noticed; running a real investigation through it did.
+( cd "$TR" && ./service.sh stop >/dev/null 2>&1; ./service.sh uninstall >/dev/null 2>&1 )
+git -C "$TR" checkout -q -b task/argtest 2>/dev/null
+git -C "$TR" push -q -u origin task/argtest >/dev/null 2>&1
+git -C "$TR" checkout -q main 2>/dev/null
+
+out="$( cd "$TR" && ./service.sh install --branch task/argtest 2>&1 )"
+assert_contains "install reports the arguments it was given" "--branch task/argtest" "$out"
+
+sleep 4
+# Asked of the checkout itself, not of the message that claimed it: start.sh
+# checks the branch out, so the repo is on it or the argument went nowhere.
+onbranch="$(git -C "$TR" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+if [ "$onbranch" = "task/argtest" ]; then
+  t_ok "the loop actually moved to the task branch, so the argument reached start.sh"
+else
+  t_no "the repo is on '$onbranch', so --branch did not reach start.sh"
+fi
+
+st="$( cd "$TR" && ./service.sh status 2>&1 )"
+assert_contains "status shows which branch it is on, so nobody has to guess" "task/argtest" "$st"
+
+( cd "$TR" && ./service.sh stop >/dev/null 2>&1; ./service.sh uninstall >/dev/null 2>&1 )
+git -C "$TR" checkout -q main 2>/dev/null
+out="$( cd "$TR" && ./service.sh install 2>&1 )"
+pid="$(cat "$TR/.agent-service.pid" 2>/dev/null || true)"
+
+# =============================================================================
 #  5. and it can be stopped and removed again
 # =============================================================================
 out="$( cd "$TR" && ./service.sh stop 2>&1 )"

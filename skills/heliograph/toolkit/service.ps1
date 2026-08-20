@@ -1,7 +1,9 @@
 # =============================================================================
 #  service.ps1 - make the loop outlive the session, on a Windows control node
 # =============================================================================
-#     .\service.ps1 install     # survive logout and reboot, and start now
+#     .\service.ps1 install                    # survive logout and reboot
+#     .\service.ps1 install --branch task/foo  # ...on a task branch
+#     .\service.ps1 install -- --once          # ...args after -- go to agent.sh
 #     .\service.ps1 status
 #     .\service.ps1 logs
 #     .\service.ps1 stop
@@ -98,8 +100,12 @@ function Test-Credential {
     return $false
 }
 
+# Everything except -Force is forwarded to agent.ps1, which forwards it to
+# start.sh. The first version hardcoded no arguments, so a service-managed loop
+# could not be put on a task branch - and branch per task is how this skill
+# works. Found by running a real investigation through the Linux side.
 function Install-Service {
-    param([switch]$Force)
+    param([switch]$Force, [string[]]$StartArgs = @())
     Assert-Prereqs
     if (-not (Test-Credential) -and -not $Force) {
         throw "Refusing to install a loop that cannot push. Fix the above, or pass -Force if you know better."
@@ -109,7 +115,9 @@ function Install-Service {
     # nowhere by default and a loop you cannot read is not much better than one
     # that died. 6>&1 catches the information stream too; agent.ps1 reports the
     # bash it picked with Write-Host.
-    $inner = "& '$RepoRoot\agent.ps1' *>&1 | Out-File -FilePath '$LogFile' -Encoding utf8 -Append"
+    $tail = ''
+    if ($StartArgs.Count) { $tail = ' ' + (($StartArgs | ForEach-Object { "'" + ($_ -replace "'", "''") + "'" }) -join ' ') }
+    $inner = "& '$RepoRoot\agent.ps1'$tail *>&1 | Out-File -FilePath '$LogFile' -Encoding utf8 -Append"
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
         -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command `"$inner`"" `
         -WorkingDirectory $RepoRoot
@@ -145,6 +153,7 @@ function Install-Service {
 
     Write-Output ""
     Write-Output "installed: scheduled task '$TaskName'"
+    if ($StartArgs.Count) { Write-Output "arguments: $($StartArgs -join ' ')" }
     Write-Output "mechanism: scheduled task, runs whether logged on or not, starts at boot"
     Write-Output "log      : $LogFile"
     Write-Output ""
@@ -194,7 +203,10 @@ function Uninstall-Service {
 }
 
 switch ($args[0]) {
-    'install'   { Install-Service -Force:($args -contains '-Force') }
+    'install'   {
+        $rest = @($args | Select-Object -Skip 1 | Where-Object { $_ -ne '-Force' })
+        Install-Service -Force:($args -contains '-Force') -StartArgs $rest
+    }
     'status'    { Get-Status }
     'logs'      { Show-Logs }
     'stop'      { Stop-Service_ }
