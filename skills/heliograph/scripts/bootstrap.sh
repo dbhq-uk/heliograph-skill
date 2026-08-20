@@ -45,9 +45,16 @@ skipped=0
 # that already has a task in flight.
 while IFS= read -r rel; do
   dest="$TARGET/$rel"
-  # The toolkit ships its ignore file as `gitignore` so that it applies to the
-  # transport repo and not to the skill repo carrying it. Restore the dot here.
+  # The toolkit ships its ignore and attributes files without a leading dot so
+  # that they apply to the transport repo and not to the skill repo carrying
+  # them. Restore the dot here.
+  #
+  # .gitattributes matters most on a repo that will be cloned on Windows: it
+  # pins the working tree to LF whatever core.autocrlf says, and without it a
+  # sourced caplib.sh loses `set -uo pipefail` without stopping. See the header
+  # of toolkit/gitattributes.
   [ "$rel" = "gitignore" ] && dest="$TARGET/.gitignore"
+  [ "$rel" = "gitattributes" ] && dest="$TARGET/.gitattributes"
   if [ -e "$dest" ]; then
     echo "  exists, left alone : ${dest#$TARGET/}"
     skipped=$((skipped + 1))
