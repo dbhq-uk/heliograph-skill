@@ -588,3 +588,69 @@ bootstrap.sh /tmp/check && du -sh /tmp/check
 
 A few hundred KB is right. Megabytes means something is being copied that
 should not be.
+
+
+## Two hosts that need no infrastructure at all
+
+The four templates above all create compute. These two use something the estate
+already runs, which is usually the harder problem: not "can it run" but "who has
+to approve it".
+
+### A build agent, triggered by the request itself
+
+`toolkit/pipelines/github-actions.yml` and `azure-pipelines.yml`.
+
+The agent is already inside the estate with network reach and git credentials,
+because that is what a build agent is for. Adding a pipeline is an approved
+activity. Deploying a container into production is a change board conversation.
+
+**It triggers on the push, not on a schedule.** A cron would mean waiting for
+the next tick for every step, and a hundred steps would mean a hundred waits.
+Pushing a request is the trigger. Measured end to end on GitHub Actions:
+
+```
+09:17:56  request pushed
+09:17:59  workflow run started
+09:18:04  log committed back
+```
+
+Eight seconds, which is faster than the five-second polling agent.
+
+**The path filter is load-bearing.** The job pushes a log back, and that push is
+a commit. Without a filter it triggers itself, then does it again. Logs land in
+`ops-logs/` and the agent writes `agent/status`, so triggering only on
+`agent/request` means neither can re-fire it. Verified: two requests produced
+exactly two runs, and the log pushes started nothing.
+
+GitHub gives a second guard for free, because a push made with the built-in
+`GITHUB_TOKEN` does not trigger another workflow. **Azure DevOps has no
+equivalent**, so there the path filter is the only structural guard and
+`***NO_CI***` in the commit message is the second.
+
+**Use `--once`, never the polling loop.** A pipeline job holds the agent for its
+whole duration, and polling git for an hour would block everyone else's builds.
+
+The limit: a step that takes two hours holds a build agent for two hours. For
+long-running work use a VM or a container.
+
+### A Kubernetes cluster they already run
+
+`toolkit/kubernetes/heliograph.yaml`. One `Deployment`, one replica, no Service
+and no Ingress, because the agent only makes outbound connections.
+
+The cluster has already solved what bit the other hosts: egress is configured,
+so no NAT gateway surprise, secrets have a home, and **`kubectl logs` works**.
+That last one is worth more than it sounds. A crash-looping VNet-injected ACI
+returns no logs at all, so debugging it means reproducing the failure elsewhere.
+Here you read them.
+
+`strategy: Recreate`, not RollingUpdate: two agents on one transport repo would
+both answer the same request and race on the push.
+
+Two things to know if you try this:
+
+- **AKS has its own allowed node-size list**, separate from the subscription's
+  VM SKUs. `Standard_D2as_v5` was refused where `Standard_B2s_v2` was fine. The
+  error names every size it will accept, which is genuinely helpful.
+- A Kubernetes `Secret` is base64, not encryption. If the cluster has the Key
+  Vault CSI driver or workload identity, use that instead.

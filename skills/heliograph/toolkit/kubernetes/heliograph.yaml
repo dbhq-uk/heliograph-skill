@@ -1,0 +1,91 @@
+# =============================================================================
+#  heliograph on a Kubernetes cluster the estate already runs
+# =============================================================================
+#  kubectl apply -f heliograph.yaml
+#
+#  No new infrastructure. If the estate already runs Kubernetes, this is one
+#  pod on nodes they are already paying for, and the cluster has already solved
+#  the problems that bite the other hosts: egress is configured, secrets have a
+#  home, and `kubectl logs` works.
+#
+#  That last point matters more than it sounds. A crash-looping container group
+#  in a VNet-injected ACI returns no logs at all, so debugging it means
+#  reproducing the failure somewhere else. Here you just read them.
+#
+#  NO SERVICE AND NO INGRESS. The agent only ever makes outbound connections.
+#  Nothing needs to reach it, so nothing is exposed.
+#
+#  THE CHECKOUT IS TRANSIENT. No PersistentVolumeClaim. Git is the persistence:
+#  a log exists on local disk only for the seconds between the capture
+#  finishing and the push landing. If the pod is rescheduled, run the step
+#  again.
+#
+#  BEFORE YOU APPLY THIS, create the token secret:
+#
+#    kubectl create secret generic heliograph-git \
+#      --from-literal=token='<a scoped, short-lived token>'
+#
+#  Or better, if the cluster has the Azure Key Vault CSI driver or workload
+#  identity, use that instead and delete the env entry below. A Kubernetes
+#  Secret is base64, not encryption, and anyone who can read secrets in this
+#  namespace can read the token.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: heliograph
+  labels:
+    app: heliograph
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate. Two agents on one transport repo would both
+  # answer the same request and race on the push. agent.sh already refuses to
+  # run twice on one checkout with a lock file; this is the same rule at the
+  # cluster level.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: heliograph
+  template:
+    metadata:
+      labels:
+        app: heliograph
+    spec:
+      # The image runs as uid 1000 and needs no root. Say so explicitly, since
+      # a cluster with a restrictive PodSecurity policy will otherwise ask.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: agent
+          image: ghcr.io/dbhq-uk/heliograph-toolkit:1.0.0-rc2
+          env:
+            - name: REPO_URL
+              value: "https://github.com/YOUR-ORG/YOUR-TRANSPORT-REPO.git"
+            # GitHub wants x-access-token here. GitLab wants oauth2. Azure
+            # DevOps wants it empty. Getting this wrong does not look like an
+            # auth error: git reports "could not read Username".
+            - name: GIT_TOKEN_USER
+              value: "x-access-token"
+            - name: GIT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: heliograph-git
+                  key: token
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              # The agent itself is a polling loop and needs almost nothing.
+              # Raise this if your STEPS need it: a terraform plan against a
+              # large estate will want considerably more.
+              cpu: "1"
+              memory: "1Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false   # the clone has to land somewhere
+            capabilities:
+              drop: ["ALL"]
