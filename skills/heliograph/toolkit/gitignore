@@ -79,3 +79,6 @@ Thumbs.db
 # --- agent state (local to each control node, never shared) ------------------
 .agent.lock
 .agent-state
+# service.sh's runtime state when it falls back to setsid + nohup.
+.agent-service.pid
+.agent-service.log

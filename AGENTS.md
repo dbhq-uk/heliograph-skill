@@ -19,9 +19,9 @@ Every rule in here was paid for by an investigation that went wrong first.
 ```
 .claude-plugin/plugin.json          # plugin manifest
 skills/heliograph/SKILL.md          # the skill (agent-facing instructions)
-skills/heliograph/references/       # method, runner reference, step-writing, transport, secrets, remote repos, container, windows
+skills/heliograph/references/       # method, runner reference, step-writing, transport, secrets, remote repos, container, windows, service
 skills/heliograph/scripts/          # bootstrap.sh - installs the toolkit into a transport repo
-skills/heliograph/toolkit/          # what gets copied out: start.sh, run.sh, agent.sh, agent.ps1, caplib.sh, secret.sh, lib/, steps/, docker/
+skills/heliograph/toolkit/          # what gets copied out: start.sh, run.sh, agent.sh, agent.ps1, service.sh, caplib.sh, secret.sh, lib/, steps/, docker/
 skills/heliograph/toolkit/azure/    # bicep and Terraform for four Azure hosts. Never deployed from CI
 install.sh / install-codex.sh       # local symlink installers (Claude / Codex)
 tests/                              # plain-bash assertions; run ./tests/run-tests.sh
@@ -122,6 +122,17 @@ whether the current bash tolerates CR rather than assuming, because a blanket
 check refuses to start a Windows control node that works. Full account, with the
 measurements:
 [`skills/heliograph/references/windows.md`](skills/heliograph/references/windows.md).
+
+**8. `agent.sh` does not trap HUP, and that is deliberate.** It dies when the
+ssh session closes, which looks like a one-line fix and is not: `cleanup`
+signals the running step's process group, so trapping HUP would kill an
+in-flight step every time a connection dropped. An hour-long plan destroyed by a
+wifi blink is worse than the agent exiting while the step finishes and pushes its
+log. The stale lock it leaves is already handled - `agent.sh` clears it on the
+next start. `toolkit/service.sh` (systemd `--user` plus lingering, or setsid +
+nohup) is the supported way to survive logout, and `service.ps1` does the same
+with a scheduled task. Full account:
+[`skills/heliograph/references/service.md`](skills/heliograph/references/service.md).
 
 ## Conventions
 
