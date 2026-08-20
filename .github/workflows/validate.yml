@@ -446,10 +446,19 @@ jobs:
             }
           }
           Write-Output "agent.ps1 found bash and start.sh ran its preflight"
+          # start.sh --check exits non-zero here ON PURPOSE: this throwaway repo
+          # has no origin, so the credential and push checks cannot pass and
+          # should not. What this step tests is that agent.ps1 located bash and
+          # handed over, which the assertions above have just proved from the
+          # preflight's own output. Whether the preflight reaches the right
+          # verdict about a credential is tested on Linux, where a remote exists.
+          Write-Output "start.sh --check exited $LASTEXITCODE, expected non-zero with no origin"
+          exit 0
 
       - name: The CR-tolerant branch of the line-ending probe, which Linux cannot reach
         shell: bash
         run: |
+          set +e
           set -uo pipefail
           cd tw
           out=$(./start.sh --check 2>&1 | grep -i 'line endings')
@@ -463,6 +472,7 @@ jobs:
       - name: A PowerShell step through the real capture, on Windows PowerShell
         shell: bash
         run: |
+          set +e
           set -uo pipefail
           cd tw
           PUSH=0 ./run.sh win >/dev/null 2>&1; rc=$?
@@ -481,6 +491,7 @@ jobs:
       - name: The suite's Windows-relevant files, unskipped
         shell: bash
         run: |
+          set +e
           set -uo pipefail
           rc=0
           for f in tests/test-powershell.sh tests/test-remote.sh; do
