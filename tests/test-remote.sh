@@ -111,12 +111,31 @@ else
   ( cd "$TR" && PUSH=0 ./run.sh crlf >/dev/null 2>&1 )
   MLOG="$(ls -t "$TR"/ops-logs/crlf-*.txt 2>/dev/null | head -1)"
   mut_cr="$(tr -cd '\r' < "$MLOG" 2>/dev/null | wc -c | tr -d ' ')"
-  if [ "${mut_cr:-0}" -eq 3 ]; then
-    t_ok "reverting cap_run puts both trailing CRs back (3 total), so the assertion above can fail"
-  elif [ "${mut_cr:-0}" -gt 1 ]; then
-    t_ok "reverting cap_run puts a trailing CR back ($mut_cr total), so the assertion above can fail"
+
+  # DOES THIS PLATFORM EVEN DELIVER A CRLF INTO THE CAPTURE? Probe it rather
+  # than assume, because the answer differs and the difference is the whole
+  # reason this block is not a single assertion.
+  #
+  # On Linux a CRLF written by a step arrives at cap_run's read loop intact, so
+  # removing the strip puts all the CRs back and the mutation proves the fix.
+  # Under Git for Windows' bash the MSYS runtime normalises the line ending
+  # further up the pipeline, before cap_run sees it, so the trailing CR is
+  # already gone whether cap_run strips it or not. Asserting 3 there fails and
+  # blames cap_run for something MSYS did.
+  #
+  # This mirrors the CR-tolerance probe in start.sh: the platform is asked, not
+  # assumed.
+  pipe_cr="$(printf 'a\r\n' | sed -u 's/x/x/' 2>/dev/null | tr -cd '\r' | wc -c | tr -d ' ')"
+  if [ "${pipe_cr:-0}" -ge 1 ]; then
+    if [ "${mut_cr:-0}" -eq 3 ]; then
+      t_ok "reverting cap_run puts both trailing CRs back (3 total), so the assertion above can fail"
+    else
+      t_no "this platform delivers CRLF into the capture, but reverting cap_run left $mut_cr CR bytes instead of 3, so cap_run is not what strips them"
+    fi
   else
-    t_no "reverting cap_run left $mut_cr CR bytes, so cap_run is not what strips them and the check above proves nothing"
+    # Not a skip of the assertions above: those ran and passed. This says only
+    # that the MUTATION cannot demonstrate anything here, and why.
+    t_ok "this shell normalises CRLF before cap_run sees it, so the trailing CR never reaches the capture on this platform and the mutation cannot demonstrate the fix (it does on Linux, and the container is Linux)"
   fi
 fi
 cp "$WORK/caplib.bak" "$TR/caplib.sh"
