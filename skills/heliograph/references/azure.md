@@ -58,6 +58,41 @@ Two rules follow:
   `['/usr/local/bin/entrypoint.sh', '--check']`. If you pass no arguments, leave
   `command` empty so the image's own entrypoint runs.
 
+### Each host needs a different subnet delegation
+
+If you are bringing your own VNet, the subnet has to be delegated to the right
+service, and the service differs per host. Getting it wrong fails at deploy time
+with a message that names the delegation, which is at least honest.
+
+| host | delegate the subnet to |
+|---|---|
+| Container Instances | `Microsoft.ContainerInstance/containerGroups` |
+| Web App for Containers | `Microsoft.Web/serverFarms` |
+| Container Apps | `Microsoft.App/environments` |
+
+```
+az network vnet subnet update -g RG --vnet-name VNET -n SUBNET \
+  --delegations Microsoft.App/environments
+```
+
+A Container Apps environment also needs a reasonably large subnet. A /23 worked.
+
+### VMs may not be creatable at all on a Sponsorship subscription
+
+Every VM size tried was refused with `SkuNotAvailable`: five sizes
+(`Standard_B2s`, `B1ms`, `D2s_v3`, `D2as_v5`, `B2ats_v2`) across four regions
+(uksouth, westeurope, northeurope, eastus), and a Spot instance as well.
+
+This is not a quota problem, and reading quota will mislead you. The quota was
+there: `Standard BS Family vCPUs: 0/65`, `Total Regional vCPUs: 0/65`, and
+`Virtual Machines: 0/25000`. `SkuNotAvailable` means the SKU is not offered to
+this subscription, which is a different thing and is not fixed by asking for
+more quota.
+
+If you hit this, the VM templates in this repo have never been run. Test them
+before trusting them, and expect to raise a support request or use a different
+subscription.
+
 ### App Service kills a container that does not listen, so we serve status
 
 Azure Web App for Containers runs an HTTP startup probe on a port. You cannot
