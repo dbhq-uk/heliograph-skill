@@ -203,12 +203,30 @@ cap_section() {
 # Every line is prefixed with a UTC HH:MM:SS so a HANG shows as a visible gap in
 # the timestamps rather than being indistinguishable from slow progress. That
 # property is the whole reason this wrapper exists - do not remove it.
+#
+# THE TRAILING CR is stripped here, and here is the right place because this is
+# the only capture path in the toolkit: caprun.sh calls cap_run too, so a fix in
+# either of them would otherwise have to be made twice.
+#
+# `read` splits on the newline and keeps everything before it, so a CRLF stream
+# leaves a CR on the end of every value. Measured: `printf 'alpha\r\n'` through
+# this pipeline lands in the log as "12:00:00 | alpha^M". It is invisible in a
+# terminal, wrong in the file, and it quietly breaks any later grep anchored
+# with $ - which is exactly what someone reads these logs with.
+#
+# It reaches us from anything that speaks Windows. lib/remote.sh's rt_ps runs
+# PowerShell on a remote host over ssh, and ssh carries those bytes through
+# verbatim; the same is true of any step that shells out to a Windows tool.
+#
+# Only the TRAILING one goes. A bare CR mid-line is a terminal doing
+# carriage-return progress, and deleting those would silently join output that
+# was never on the same line.
 cap_run() {
   local out="$1"; shift
   "$@" 2>&1 \
     | sed -u 's/\x1b\[[0-9;]*[mGKHF]//g' \
     | cap_redact \
-    | while IFS= read -r l; do printf '%s | %s\n' "$(date -u +%H:%M:%S)" "$l"; done \
+    | while IFS= read -r l; do l="${l%$'\r'}"; printf '%s | %s\n' "$(date -u +%H:%M:%S)" "$l"; done \
     | tee -a "$out"
   return "${PIPESTATUS[0]}"
 }

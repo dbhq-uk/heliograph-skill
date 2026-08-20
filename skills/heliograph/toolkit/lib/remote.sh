@@ -96,13 +96,88 @@ rt_ssh() {
 }
 
 # --- Windows over SSH --------------------------------------------------------
+# A Windows host running OpenSSH defaults its shell to cmd unless someone has
+# set DefaultShell, and everything awkward here follows from that one fact.
+# Measured against Windows Server 2022 with OpenSSH and PowerShell 5.1.
+#
+# WHY NOT PLAIN -Command. ssh joins its arguments into one command line and
+# hands it to cmd, so cmd parses it BEFORE powershell ever sees it. Any cmd
+# metacharacter in the script is therefore eaten, and the pipe is the one that
+# matters because a PowerShell diagnostic without a pipe is barely PowerShell:
+#
+#     rt_ps host 'Get-Service sshd | Select-Object Name,Status'
+#     'Select-Object' is not recognized as an internal or external command
+#
+# cmd took the pipe and tried to run Select-Object as a program. The same goes
+# for & < > and ^.
+#
+# WHY -EncodedCommand, despite what this comment used to say. Base64 of UTF-16LE
+# has no metacharacters at all, so cmd cannot corrupt it. The old warning that it
+# "breaks through this path" was describing a real symptom with the wrong cause:
+# PowerShell decides it is not attached to a console and serialises its non-stdout
+# streams as CLIXML, so the log fills with
+#
+#     #< CLIXML
+#     <Objs Version="1.1.0.1" ...><S S="Error">Get-Service : Cannot find ...
+#
+# That is worst exactly when it hurts most, because a remote ERROR is the thing
+# you are usually reading the log for. Two settings fix it rather than avoiding
+# the flag: silencing $ProgressPreference stops the progress records, and merging
+# the streams INSIDE PowerShell with 2>&1 | Out-String -Stream renders errors as
+# the text a person expects before anything can serialise them. Measured: CLIXML
+# occurrences drop to 0, and the error reads
+#
+#     Get-Service : Cannot find any service with service name 'no-such-service'
+#
+# ENCODING. The remote console is IBM437 out of the box, so non-ASCII is mangled
+# on the way out and some of it is destroyed outright: a euro sign came back as
+# "?". Forcing UTF-8 fixes it, verified by round-tripping e-acute, u-umlaut and
+# a euro sign back as valid UTF-8. This is not exotic on a localised Windows
+# estate, where service descriptions and error text are non-ASCII as a matter of
+# course.
+#
+# LINE ENDINGS are NOT handled here. PowerShell emits CRLF and ssh carries it
+# through verbatim, but cap_run strips the trailing CR for every step, so fixing
+# it a second time here would be a second place to keep in step with the first.
+_rt_ps_encode() {
+  local script="$1"
+  if command -v iconv >/dev/null 2>&1; then
+    printf '%s' "$script" | iconv -f utf-8 -t utf-16le | base64 -w0
+    return 0
+  fi
+  # iconv lives in glibc and is present on every host this has run on, including
+  # the container image. The fallback exists so a missing one degrades to a clear
+  # refusal rather than a corrupted command: widening each ASCII byte with a NUL
+  # is exactly UTF-16LE, verified byte-identical to iconv, but only for ASCII.
+  if printf '%s' "$script" | LC_ALL=C grep -q '[^[:print:][:space:]]'; then
+    echo "rt_ps: this script contains non-ASCII and iconv is not installed, so it cannot be encoded for the remote host. Install iconv, or keep the script ASCII and let the REMOTE output be non-ASCII, which is handled." >&2
+    return 1
+  fi
+  printf '%s' "$script" | sed 's/./&\x00/g' | base64 -w0
+}
+
 # rt_ps <target> <powershell-script>
-# A Windows host running OpenSSH commonly defaults its shell to cmd, so
-# PowerShell has to be invoked explicitly. Pass the script as ONE plain string:
-# -EncodedCommand is known to break through this path, so don't reach for it.
+# Pass the script as ONE plain string. Pipes, quotes and ampersands are safe.
 rt_ps() {
   local target="$1"; shift
-  rt_ssh "$target" powershell -NoProfile -NonInteractive -Command "$*"
+  local wrapped b64
+  # $Error is what restores the exit code. Merging the streams with 2>&1 defeats
+  # PowerShell's own "did an error happen" tracking, because the error becomes an
+  # object in a pipeline that then succeeds. Measured against a real host:
+  # `Get-Service no-such-service` returned 1 before this rewrite and 0 after it,
+  # which would have quietly stopped a step noticing that a remote probe failed.
+  # Clearing $Error first and testing it last puts that back, and an explicit
+  # `exit N` inside the script still wins because it never reaches this line.
+  wrapped='$ProgressPreference = "SilentlyContinue"
+$ErrorActionPreference = "Continue"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$Error.Clear()
+& {
+'"$*"'
+} 2>&1 | Out-String -Stream | ForEach-Object { [Console]::Out.WriteLine($_) }
+exit $(if ($Error.Count) { 1 } else { 0 })'
+  b64="$(_rt_ps_encode "$wrapped")" || return 1
+  rt_ssh "$target" powershell -NoProfile -NonInteractive -EncodedCommand "$b64"
 }
 
 # rt_win_info <target> - quick "is this box alive and who am I on it".
