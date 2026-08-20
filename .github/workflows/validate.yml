@@ -382,16 +382,35 @@ jobs:
             catch { "$k -> absent" }
           }
 
+      # Reports the evidence rather than just the verdict. A check that says a
+      # file is wrong without showing what git thinks about it sends the reader
+      # back to a Windows runner they cannot log in to, which is the failure
+      # this whole repo is about.
       - name: .gitattributes survived the checkout, so bash can read the toolkit
         shell: bash
         run: |
           set -uo pipefail
-          bad=$(grep -lrU $'\r' --include='*.sh' --exclude-dir=.git . | head -5)
-          if [ -n "$bad" ]; then
-            echo "::error::CRLF in the checked-out toolkit despite .gitattributes: $bad"
-            exit 1
+          bad=$(grep -lrU $'\r' --include='*.sh' --exclude-dir=.git . || true)
+          if [ -z "$bad" ]; then
+            echo "no .sh file in the checkout contains a CR"
+            exit 0
           fi
-          echo "no .sh file in the checkout contains a CR"
+          echo "files containing a CR:"
+          printf '%s\n' "$bad"
+          for f in $bad; do
+            echo "--- $f"
+            echo "  attrs   : $(git check-attr text eol -- "$f" | tr '\n' ' ')"
+            echo "  status  : [$(git status --porcelain -- "$f")]"
+            echo "  crlf-eol: $(grep -cU $'\r$' "$f" || true) lines end in CR"
+            echo "  cr-total: $(tr -cd '\r' < "$f" | wc -c) CR bytes"
+            echo "  blob-cr : $(git cat-file blob "HEAD:$f" 2>/dev/null | tr -cd '\r' | wc -c) CR bytes in the committed blob"
+            echo "  context :"
+            grep -nU $'\r' "$f" | head -3 | cat -v | sed 's/^/    /'
+          done
+          echo "  git config core.autocrlf : $(git config --get core.autocrlf)"
+          echo "  git config core.eol      : $(git config --get core.eol)"
+          echo "::error::CRLF in the checked-out tree despite .gitattributes"
+          exit 1
 
       - name: agent.ps1 finds bash and hands over
         shell: pwsh
