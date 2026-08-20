@@ -64,13 +64,18 @@ fi
 #   explicit LF pins the ending: CR drops to 0. pwsh on Linux already emits LF,
 #   so this only earns its keep on a Windows control node.
 #
-#   COLOUR. pwsh 7 wraps Format-Table headers in ANSI escapes even when its
-#   output is not a terminal, so a captured log ends up holding literal
-#   ESC[32;1m. Setting PlainText in the PARENT is not enough once the step runs
-#   in a child process: that measured 8 ESC bytes still getting through, and
-#   NO_COLOR in the child's environment is what takes it to 0. Windows
-#   PowerShell 5.1 has no $PSStyle and emits no ANSI at all, so this is pwsh 7
-#   insurance rather than a Windows fix.
+#   COLOUR, and it is NOT the colour that needs this. cap_run already strips
+#   ANSI with 's/\x1b\[[0-9;]*[mGKHF]//g', which covers everything pwsh 7 emits
+#   for Format-Table: 8 ESC bytes in, 0 out. Removing NO_COLOR changes nothing
+#   for those, and an assertion written against a colour-only step cannot fail.
+#
+#   The gap is OSC 8 HYPERLINKS. pwsh emits them as ESC]8;;<url>, and that sed
+#   only matches ESC[ sequences, so they go straight through into the log:
+#   measured 4 ESC bytes surviving cap_run for a step calling
+#   $PSStyle.FormatHyperlink, and 0 with NO_COLOR set. NO_COLOR is what earns
+#   its place here; PlainText in the parent does not, and is kept only because
+#   it costs nothing. Windows PowerShell 5.1 has no $PSStyle and emits no ANSI
+#   at all, so this is pwsh 7 insurance rather than a Windows fix.
 #
 #   ENCODING. Forcing UTF-8 is about the OEM codepage mangling non-ASCII, NOT
 #   about UTF-16: the redirected stream measured NUL=0, so the widely repeated

@@ -255,6 +255,49 @@ else
   assert_eq "no ANSI escape survives into the committed log" "0" "$esc"
 fi
 
+# --- the escape that cap_run does NOT already handle -------------------------
+# The assertion above cannot fail on its own, and saying so is the point.
+# cap_run strips ANSI with 's/\x1b\[[0-9;]*[mGKHF]//g', which removes everything
+# Format-Table emits, so a colour-only step would satisfy it whether ps_step set
+# NO_COLOR or not. OSC 8 hyperlinks are the real gap: pwsh writes them as
+# ESC]8;;<url>, that sed only matches ESC[ sequences, and they reach the log.
+# This step emits one, so the assertion below is capable of failing.
+cat > "$TR/steps/t-link.ps1" <<'EOF'
+Write-Output "plain line"
+if ($PSStyle) { $PSStyle.FormatHyperlink("docs", "https://example.invalid") }
+EOF
+sed -i 's|^  tslow)  ps_step ./steps/t-slow.ps1 ;;|  tslow)  ps_step ./steps/t-slow.ps1 ;;\
+  tlink)  ps_step ./steps/t-link.ps1 ;;|' "$TR/run.sh"
+
+if "$PS_BIN" -NoProfile -Command 'exit $(if ($PSStyle) { 0 } else { 1 })' 2>/dev/null; then
+  ( cd "$TR" && PUSH=0 ./run.sh tlink >/dev/null 2>&1 )
+  LLOG="$(ls -t "$TR"/ops-logs/tlink-*.txt 2>/dev/null | head -1)"
+  if [ -n "$LLOG" ]; then
+    link_esc="$(tr -cd '\033' < "$LLOG" | wc -c | tr -d ' ')"
+    assert_eq "an OSC 8 hyperlink does not reach the log either, which cap_run alone would not prevent" "0" "$link_esc"
+
+    # Prove that assertion is load-bearing: without NO_COLOR the same step
+    # leaves the escape in the log. If this comes back 0 too, the check above
+    # is decoration and should be deleted rather than trusted.
+    cp "$TR/run.sh" "$TR/run.sh.bak"
+    sed -i 's|CMD=(env NO_COLOR=1 TERM=dumb "\$sh"|CMD=(env "$sh"|' "$TR/run.sh"
+    rm -f "$TR"/ops-logs/tlink-*.txt
+    ( cd "$TR" && PUSH=0 ./run.sh tlink >/dev/null 2>&1 )
+    MLOG="$(ls -t "$TR"/ops-logs/tlink-*.txt 2>/dev/null | head -1)"
+    mut_esc="$(tr -cd '\033' < "$MLOG" 2>/dev/null | wc -c | tr -d ' ')"
+    mv "$TR/run.sh.bak" "$TR/run.sh"
+    if [ "${mut_esc:-0}" -gt 0 ]; then
+      t_ok "removing NO_COLOR puts the escape back ($mut_esc bytes), so the assertion above can fail"
+    else
+      t_no "removing NO_COLOR changed nothing, so the hyperlink assertion proves nothing and NO_COLOR is doing no work"
+    fi
+  else
+    t_no "the hyperlink step produced no log"
+  fi
+else
+  t_skip "no \$PSStyle on this edition, so OSC 8 hyperlinks cannot be produced to test against"
+fi
+
 # --- exit codes, the bug this file exists to keep fixed ----------------------
 ( cd "$TR" && PUSH=0 ./run.sh tleak >/dev/null 2>&1 ); leak_rc=$?
 assert_eq "a step whose internal native command fails still reports success" "0" "$leak_rc"

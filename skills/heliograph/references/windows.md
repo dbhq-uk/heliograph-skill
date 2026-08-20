@@ -187,13 +187,25 @@ script, to a file or through a pipe. A stray CR on every captured line is
 invisible in a terminal, wrong in the file, and quietly breaks any later grep
 anchored with `$`. Rewriting each line with an explicit LF takes CR to 0.
 
-**Colour.** pwsh 7 wraps `Format-Table` headers in ANSI escapes even when its
-output is not a terminal, so a captured log ends up holding literal
-`ESC[32;1m`. Setting `PlainText` in the parent is not enough once the step runs
-in a child: that measured 8 ESC bytes still getting through, and `NO_COLOR` in
-the child's environment is what takes it to 0. Windows PowerShell 5.1 has no
-`$PSStyle` and emits no ANSI at all, so this is pwsh 7 insurance rather than a
-Windows fix.
+**Colour, and it is not the colour that needs this.** `cap_run` already strips
+ANSI with `s/\x1b\[[0-9;]*[mGKHF]//g`, and that covers everything pwsh 7 emits
+for `Format-Table`: 8 ESC bytes in, 0 out. So a log assertion written against a
+colour-producing step passes whether `ps_step` sets `NO_COLOR` or not, and
+proves nothing.
+
+The gap is **OSC 8 hyperlinks**. pwsh writes them as `ESC]8;;<url>`, that sed
+only matches `ESC[` sequences, and they go straight through into the committed
+log. Measured for a step calling `$PSStyle.FormatHyperlink`: 4 ESC bytes
+surviving `cap_run` without `NO_COLOR`, and 0 with it. `NO_COLOR` is what earns
+its place; `PlainText` in the parent does not, and is kept only because it costs
+nothing.
+
+`tests/test-powershell.sh` asserts this with a hyperlink-emitting step and then
+removes `NO_COLOR` to confirm the escape comes back, because the obvious version
+of the test cannot fail.
+
+Windows PowerShell 5.1 has no `$PSStyle` and emits no ANSI at all, so this is
+pwsh 7 insurance rather than a Windows fix.
 
 **Encoding.** Forcing UTF-8 is about the OEM codepage mangling non-ASCII. It is
 *not* about UTF-16: the redirected stream measured NUL=0, so the widely repeated
