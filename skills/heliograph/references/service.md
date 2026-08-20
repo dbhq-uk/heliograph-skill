@@ -13,6 +13,25 @@
 
 On a Windows control node, `service.ps1` with the same subcommands.
 
+## Arguments reach start.sh
+
+Everything except `--force` is forwarded verbatim, so a service-managed loop can
+do anything `./start.sh` can:
+
+```bash
+./service.sh install --branch task/dns-timeouts    # run on a task branch
+./service.sh install -- --interval 15              # after -- goes to agent.sh
+```
+
+This is not a nicety. **Branch per task is how the whole skill works**, and the
+first version of `service.sh` hardcoded `start.sh` with no arguments, so a
+service-managed loop was stuck on whichever branch happened to be checked out.
+Nothing in the test suite noticed. Running a real investigation through it did,
+within minutes of trying to move to a task branch.
+
+`status` reports both the command the unit runs and the branch the repo is
+actually on, so nobody has to infer which task a running loop is serving.
+
 ## The bug
 
 `sshd` sends `SIGHUP` to the session's process group when the connection closes.

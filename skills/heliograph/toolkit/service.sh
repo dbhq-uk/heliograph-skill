@@ -2,7 +2,9 @@
 # =============================================================================
 #  service.sh - make the loop outlive the session that started it
 # =============================================================================
-#     ./service.sh install     # survive logout, and start now
+#     ./service.sh install                      # survive logout, and start now
+#     ./service.sh install --branch task/foo    # ...on a task branch
+#     ./service.sh install -- --once            # ...args after -- go to agent.sh
 #     ./service.sh status      # is it running, and where are the logs
 #     ./service.sh logs        # follow them
 #     ./service.sh stop
@@ -50,6 +52,8 @@ UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 UNIT_PATH="$UNIT_DIR/$UNIT_NAME"
 PID_FILE="$REPO_ROOT/.agent-service.pid"
 LOG_FILE="$REPO_ROOT/.agent-service.log"
+
+START_ARGS=()
 
 say()  { printf '%s\n' "$*"; }
 warn() { printf 'warn  %s\n' "$*" >&2; }
@@ -151,6 +155,13 @@ credential_check() {
 # --- install -----------------------------------------------------------------
 write_unit() {
   mkdir -p "$UNIT_DIR"
+  # systemd splits ExecStart on whitespace and honours double quotes, so each
+  # argument is quoted individually rather than pasted in as one string. A
+  # branch name with a space in it is unusual but a step name with one is not.
+  local EXEC_TAIL="" a
+  for a in ${START_ARGS+"${START_ARGS[@]}"}; do
+    EXEC_TAIL="$EXEC_TAIL \"$a\""
+  done
   # StartLimit* sit in [Unit], not [Service], on systemd 229 and newer.
   #
   # Restart=always with a limit, deliberately. Always, because the whole point is
@@ -171,7 +182,7 @@ StartLimitBurst=5
 [Service]
 Type=simple
 WorkingDirectory=$REPO_ROOT
-ExecStart=/usr/bin/env bash $REPO_ROOT/start.sh
+ExecStart=/usr/bin/env bash $REPO_ROOT/start.sh$EXEC_TAIL
 Restart=always
 RestartSec=10
 
@@ -183,14 +194,34 @@ WantedBy=default.target
 EOF
 }
 
+# EVERYTHING EXCEPT --force IS FORWARDED TO start.sh, VERBATIM.
+#
+# The first version of this hardcoded `start.sh` with no arguments, which meant a
+# service-managed loop could not be put on a task branch - and branch per task is
+# how this whole skill works. It also ruled out --interval and anything after --.
+# Found by running a real investigation through it rather than by review.
+#
+# --force is consumed here because it is this script's own escape hatch for the
+# credential check. Anything else belongs to start.sh, which already knows how to
+# forward its own tail to agent.sh.
 cmd_install() {
   [ -f "$REPO_ROOT/start.sh" ] || die "no start.sh beside this script. Run it from inside a transport repo."
+
+  local force=0
+  START_ARGS=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --force) force=1 ;;
+      *)       START_ARGS+=("$1") ;;
+    esac
+    shift
+  done
 
   if ! credential_check; then
     warn ""
     warn "Refusing to install a loop that cannot push. Fix the above, or pass --force"
     warn "if you know better than this check."
-    [ "${1:-}" = "--force" ] || exit 1
+    [ "$force" = "1" ] || exit 1
     warn "--force given, installing anyway."
   fi
 
@@ -217,6 +248,7 @@ cmd_install() {
 
     say ""
     say "installed: $UNIT_PATH"
+    [ "${#START_ARGS[@]}" -gt 0 ] && say "arguments: ${START_ARGS[*]}"
     say "mechanism: systemd --user, restarts on failure, survives reboot"
     if [ "$linger" = "yes" ]; then
       say "lingering: enabled, so it survives logout"
@@ -240,7 +272,7 @@ cmd_install() {
   # setsid detaches from the controlling terminal so SIGHUP never arrives, and
   # the redirects matter as much: a process whose stdout is a closed pty gets
   # EIO on the next write and dies anyway, having survived the signal.
-  setsid nohup bash "$REPO_ROOT/start.sh" >>"$LOG_FILE" 2>&1 </dev/null &
+  setsid nohup bash "$REPO_ROOT/start.sh" ${START_ARGS+"${START_ARGS[@]}"} >>"$LOG_FILE" 2>&1 </dev/null &
   local pid=$!
   sleep 2
   if ! kill -0 "$pid" 2>/dev/null; then
@@ -251,6 +283,7 @@ cmd_install() {
   printf '%s\n' "$pid" > "$PID_FILE"
   say ""
   say "running  : pid $pid"
+  [ "${#START_ARGS[@]}" -gt 0 ] && say "arguments: ${START_ARGS[*]}"
   say "log      : $LOG_FILE"
   say "mechanism: setsid + nohup. Survives logout. Does NOT survive a reboot -"
   say "           after one, run this again."
@@ -261,6 +294,8 @@ cmd_status() {
   if systemd_user_ok && [ -f "$UNIT_PATH" ]; then
     say "mechanism: systemd --user ($UNIT_PATH)"
     say "lingering: $(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)"
+    say "command  : $(grep -m1 '^ExecStart=' "$UNIT_PATH" | cut -d= -f2-)"
+    say "branch   : $(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
     systemctl --user status "$UNIT_NAME" --no-pager 2>&1 | head -15
     return 0
   fi
