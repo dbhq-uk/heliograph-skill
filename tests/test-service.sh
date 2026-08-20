@@ -103,6 +103,22 @@ out="$( cd "$TR" && GIT_TOKEN=abcdef1234 timeout 30 ./service.sh install --force
 assert_contains "--force installs anyway and says so" "installing anyway" "$out"
 ( cd "$TR" && ./service.sh uninstall >/dev/null 2>&1 )
 
+# An ssh remote with NO agent used to say nothing at all, so a loop that could
+# not push installed silently. It must not resolve a key itself - ssh's own
+# config resolution is richer than anything reimplemented here, and the spec says
+# so - but it must say what the situation is and how to settle it.
+git -C "$TR" remote set-url origin git@github.com:example/nothing.git
+out="$( cd "$TR" && env -u SSH_AUTH_SOCK ./service.sh install 2>&1 )"
+( cd "$TR" && ./service.sh stop >/dev/null 2>&1; ./service.sh uninstall >/dev/null 2>&1 )
+assert_contains "an ssh remote with no agent is not passed over in silence" \
+  "no agent in this shell" "$out"
+assert_contains "and it names the one command that settles it" "start.sh --check" "$out"
+
+out="$( cd "$TR" && SSH_AUTH_SOCK=/nonexistent/agent.sock ./service.sh install 2>&1 )"
+( cd "$TR" && ./service.sh stop >/dev/null 2>&1; ./service.sh uninstall >/dev/null 2>&1 )
+assert_contains "an agent key is called out as lasting only as long as the session" \
+  "outlive it" "$out"
+
 # =============================================================================
 #  3. a remote that needs no credential is not refused
 # =============================================================================

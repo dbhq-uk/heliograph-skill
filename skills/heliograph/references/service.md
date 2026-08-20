@@ -159,9 +159,23 @@ warn        printf '%s' "$GIT_TOKEN" > ~/.git-token && chmod 600 ~/.git-token
 overrides the refusal and says that it did.
 
 Which credential is relevant is decided by the remote's scheme, the same
-three-way split `start.sh` uses. An `ssh://` remote relying on an `ssh-agent`
-gets a warning, because the service will not inherit that either. A local path
-remote is not questioned at all, since git needs no credential for one.
+three-way split `start.sh` uses. A local path remote is not questioned at all,
+since git needs no credential for one.
+
+An `ssh://` remote gets said something about either way, because both cases are
+traps:
+
+- **with** an agent in the shell, a warning: the service will not inherit it, and
+  an agent key lasts only as long as the session that this whole feature exists
+  to outlive
+- **without** one, a note: the service will depend on a key ssh can find by
+  itself, and `./start.sh --check` settles that in one step
+
+It does **not** try to resolve the key itself. ssh's own config resolution is
+richer than anything reimplemented here, and a second resolver that disagreed
+would report a key git never uses. What settles it is the write check, which
+`start.sh` runs at every service start and which refuses to start the agent if
+the push would fail.
 
 ## agent.sh deliberately does NOT trap HUP
 

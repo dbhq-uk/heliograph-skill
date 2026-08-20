@@ -4,10 +4,67 @@ Git is the transport, so how the control node authenticates to the remote is
 load-bearing rather than incidental. Establish it once, at the start, and write
 what you found into the branch.
 
-## Prefer SSH with a forwarded agent key
+## Prefer SSH with a forwarded agent key, IF someone stays logged in
 
 Nothing is stored on the control node and the push needs no credentials of its
 own. `cap_git` is then just `git`.
+
+**This is the right answer only for an attended run**, and that qualifier is the
+most important sentence on this page. A forwarded agent key exists only while
+the operator's SSH session is open. The moment they disconnect, the key is gone.
+
+So it is incompatible with `service.sh`, which exists precisely to let the loop
+outlive that session. Install a service against a forwarded agent key and it will
+start perfectly, poll happily, and fail every push. `service.sh` warns when it
+sees this, but the warning is easy to skim past:
+
+```
+warn  origin is an SSH remote and this shell has an ssh-agent, which the
+      service will NOT inherit.
+```
+
+## What an unattended loop needs instead
+
+Pick whichever the estate allows. All three work with no change to `cap_git`.
+
+**A key on disk**, the simplest. Generate it ON the control node so the private
+half never travels, and register the public half with the host:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ""
+ssh-keyscan -t ed25519 <host> >> ~/.ssh/known_hosts
+```
+
+`start.sh` will report `no ssh agent is reachable` and then let the read and
+write checks settle it, which is the design working rather than a problem: a key
+in `~/.ssh` needs no agent.
+
+**A deploy key**, if the host has them and the estate permits them. Narrower than
+anything else here, because it reaches exactly one repository.
+
+The trap: on GitHub an **organisation** can disable them for every repo it owns,
+and the refusal names the wrong scope:
+
+```
+Deploy keys are disabled for this repository
+```
+
+It is not a repository setting. It is `deploy_keys_enabled_for_repositories` on
+the org, so looking through the repo's settings finds nothing to change. An owner
+has to change it, or you use one of the other two.
+
+**A token in a file.** `caplib` already reads `~/.git-token`, so a detached
+service picks it up with nothing else to configure:
+
+```bash
+printf '%s' "$TOKEN" > ~/.git-token && chmod 600 ~/.git-token
+```
+
+Not the environment. A detached process inherits none of it, which is why
+`service.sh` refuses to install when the only credential it can find is
+`GIT_TOKEN` in the shell.
+
+
 
 Confirm the **port** the host actually serves. A non-standard one is common on
 self-hosted servers, and the wrong port typically times out rather than refusing,

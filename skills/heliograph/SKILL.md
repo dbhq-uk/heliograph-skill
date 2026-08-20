@@ -71,6 +71,12 @@ what is missing and leaves what is already there alone.
 
 Ask the operator to clone it on the control node. That is the only setup they do.
 
+**If the loop is to run unattended, decide the credential now.** A forwarded ssh
+agent key is the nicest option for an attended run and is no use at all once the
+operator disconnects, which is exactly when `toolkit/service.sh` is keeping the
+loop alive. An unattended loop needs a key on disk, a deploy key, or a token in
+`~/.git-token`. See [references/transport.md](references/transport.md).
+
 ## 2. Baseline before theorising
 
 ```bash
@@ -105,11 +111,28 @@ the machine can capture properly and that git can push from it, then starts the
 agent, which watches `agent/request` and runs when the `id:` changes:
 
 ```
-you       edit agent/request (new id), push ───────────────▶ transport repo
+you       git pull --rebase, edit agent/request (new id), push ──▶ transport repo
 agent     picks it up within seconds, runs ./run.sh
           pushes agent/status, then the log ───────────────▶ transport repo
 you       poll, read the log, decide the next step ◀────────
 ```
+
+**Always `git pull --rebase` before you push.** You and the agent push to the same
+branch, and it pushes far more often than you do: a status commit when a run
+starts and again when it ends, a progress snapshot every 60 seconds during a long
+step, and the log itself. So the remote moves under you while you are writing the
+next request, and a plain push is rejected:
+
+```
+! [rejected]  task/foo -> task/foo (fetch first)
+```
+
+That is not a fault, it is two writers on one branch working as intended. The
+agent already does exactly this on its own side before every push. Rebase rather
+than merge: it keeps the history readable as a sequence of requests and answers
+instead of threading it with merge commits. Conflicts are rare in practice, since
+the agent only ever writes `agent/status` and `ops-logs/` while you write
+`agent/request` and `steps/`.
 
 If they want to know whether the machine will work before committing to anything,
 `./start.sh --check` answers that and changes nothing.

@@ -120,10 +120,21 @@ credential_check() {
       warn "there is no origin remote. Git is the transport, so there is nowhere to push a log."
       return 1 ;;
     ssh)
+      # NO KEY RESOLUTION HERE, deliberately. ssh's own config resolution is
+      # richer than anything reimplemented in this file, and a second resolver
+      # that disagreed with it would report a key git never uses. The spec is
+      # explicit about that. So this reports the situation and points at the one
+      # thing that actually settles it, which is start.sh's write check.
       if [ -n "${SSH_AUTH_SOCK:-}" ]; then
         warn "origin is an SSH remote and this shell has an ssh-agent, which the service will NOT inherit."
-        warn "  Give the service a key it can read without an agent: put one at ~/.ssh/id_ed25519,"
-        warn "  or name it in ~/.ssh/config for this host. Otherwise every push will fail."
+        warn "  An agent key lasts only as long as your session, and the whole point of a service is"
+        warn "  to outlive it. Give the service a key it can read without an agent: put one at"
+        warn "  ~/.ssh/id_ed25519, or name it in ~/.ssh/config for this host."
+        warn "  Verify before installing:  ./start.sh --check"
+      else
+        say "note: origin is an SSH remote and there is no agent in this shell, so the service will"
+        say "      depend on a key ssh can find by itself. './start.sh --check' proves it in one step,"
+        say "      and the service's own preflight will refuse to start the agent if it cannot push."
       fi
       return 0 ;;
     other)
