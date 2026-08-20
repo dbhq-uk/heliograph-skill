@@ -1,12 +1,14 @@
 # Windows
 
-Two separate things, and they are worth keeping apart because they fail in
+Three separate things, and they are worth keeping apart because they fail in
 different places:
 
 - **Running the loop on a Windows machine.** `agent.ps1` does this. It is a
   launcher, not a port.
 - **Writing a step in PowerShell.** `ps_step` in `run.sh` does this. It works on
   any control node that has PowerShell, including Linux.
+- **Reaching a Windows machine from elsewhere.** `rt_ps` in `lib/remote.sh` does
+  this, over SSH. The control node can be anything.
 
 Everything below was measured on Windows Server 2022 with PowerShell 5.1.20348
 and Git for Windows 2.55, and on Linux with pwsh 7.6.5. Where a number is
@@ -234,11 +236,137 @@ log that looks fine and hides exactly the hang it was captured to find.
 The fallback matters. **Windows Server 2022 has no pwsh 7 by default** - only
 Windows PowerShell 5.1. A step that needs pwsh 7 features has to say so.
 
-## What is not solved
+## Reaching a Windows host from somewhere else
 
-`agent.ps1` makes a Windows machine able to *host* the loop. It does nothing
-about *reaching* a Windows machine from elsewhere. `lib/remote.sh` has `rt_ps`,
-which is one line over SSH and assumes the target already runs an SSH server. If
-you are pointing steps at a Windows box rather than running on one, that is the
-code to look at, and it has not been through the same measurement as anything
-above.
+This is the other direction: the loop runs wherever it likes, and a step points
+at a Windows box. `rt_ps` in `lib/remote.sh` does it over SSH.
+
+```bash
+. lib/remote.sh
+rt_ps "admin@winbox" 'Get-Service sshd | Select-Object Name,Status'
+rt_win_info "admin@winbox"
+```
+
+The target needs OpenSSH Server, which is an optional Windows capability:
+
+```powershell
+Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+Start-Service sshd
+Set-Service -Name sshd -StartupType Automatic
+```
+
+`rt_ssh` uses `BatchMode`, so it fails rather than prompting. Key auth is
+therefore required, and for a user in the Administrators group the key goes in
+`C:\ProgramData\ssh\administrators_authorized_keys`, not the user's `.ssh`
+directory. That file must be owned by Administrators and SYSTEM only or sshd
+ignores it.
+
+### Everything here follows from the remote shell being cmd
+
+A Windows OpenSSH host defaults its shell to cmd unless someone has set
+`DefaultShell`. ssh joins its arguments into one command line and hands it to
+that shell, so **cmd parses the command before PowerShell ever sees it**.
+
+That ate the pipe. With a plain `-Command`, this is what came back:
+
+```
+$ rt_ps host 'Get-Service sshd | Select-Object Name,Status'
+'Select-Object' is not recognized as an internal or external command,
+operable program or batch file.
+```
+
+cmd took the `|` and tried to run `Select-Object` as a program. The same applies
+to `&`, `<`, `>` and `^`. A PowerShell diagnostic that cannot use a pipe is
+barely PowerShell, so this was the blocking problem.
+
+`-EncodedCommand` fixes it, because base64 of UTF-16LE contains no
+metacharacters for cmd to find. An older comment in `remote.sh` warned it "is
+known to break through this path", and that was a real symptom with the wrong
+cause: PowerShell decides it is not attached to a console and serialises its
+non-stdout streams as CLIXML, so the log fills with
+
+```
+#< CLIXML
+<Objs Version="1.1.0.1" ...><S S="Error">Get-Service : Cannot find ...
+```
+
+which is worst precisely when it matters most, because a remote error is usually
+why you are reading the log. Two settings fix that rather than avoiding the
+flag. Silencing `$ProgressPreference` removes the progress records, and merging
+the streams inside PowerShell with `2>&1 | Out-String -Stream` renders errors as
+text before anything can serialise them. Measured: CLIXML occurrences drop to 0
+and the error reads
+
+```
+Get-Service : Cannot find any service with service name 'no-such-service-here'.
+```
+
+### Encoding, which is lossy rather than merely ugly
+
+The remote console is IBM437 out of the box. Sent through unchanged, `é ü €`
+came back as the bytes `202 201 ?`: not valid UTF-8, and the euro sign
+**destroyed outright**, not merely mis-rendered. Forcing
+`[Console]::OutputEncoding` to UTF-8 round-trips all three correctly.
+
+This is not exotic. On a localised Windows estate, service descriptions and
+error text are non-ASCII as a matter of course.
+
+### The exit code, which merging the streams quietly broke
+
+`2>&1` turns an error into an object in a pipeline that then succeeds, which
+defeats PowerShell's own record of whether anything went wrong. Measured against
+a real host, `Get-Service no-such-service` returned **1 before the rewrite and 0
+after it** - a step would have stopped noticing that a remote probe failed.
+
+`$Error.Clear()` first and `exit $(if ($Error.Count) { 1 } else { 0 })` last puts
+it back. An explicit `exit N` inside the script still wins, because it never
+reaches that line. Verified equal to the old behaviour for a bad command, an
+explicit `exit 7`, a `throw`, an ordinary success and an unreachable host.
+
+### Line endings are not handled here
+
+PowerShell emits CRLF and ssh carries it through verbatim, so a captured line
+used to end in a stray CR: invisible in a terminal, wrong in the file, and it
+quietly breaks any later `grep` anchored with `$`. Measured against a real host,
+6 CR bytes off the wire became 6 in the log.
+
+That is fixed in `cap_run`, not here, because `cap_run` is the only capture path
+in the toolkit and a second fix would be a second thing to keep in step. Only the
+**trailing** CR is removed. A bare CR mid-line is a terminal doing
+carriage-return progress, and deleting those would silently join output that was
+never on the same line.
+
+**Which control node you are on decides whether that fix does anything.** Under
+Git for Windows' bash the MSYS runtime normalises the line ending further up the
+pipeline, before `cap_run` ever sees it, so a Windows control node never had this
+problem. On Linux the CR arrives intact and `cap_run` is what removes it. The
+container and every host under `toolkit/azure/` are Linux, so that is the case
+that matters in practice.
+
+`tests/test-remote.sh` probes for this rather than assuming it, in the same shape
+as `start.sh`'s CR-tolerance check: it asks whether a CRLF survives a pipe on
+this shell, and only demands that reverting `cap_run` puts the CRs back where the
+answer is yes.
+
+## Counting CR bytes on Git bash, which is harder than it looks
+
+`grep` is not a reliable way to find a CR under Git for Windows. MSYS grep and
+MSYS shell redirection disagree about text translation, so `grep -lrU $'\r'`
+reported **every** `.sh` file in a checkout as CRLF while `tr`, `git status` and
+the blob all agreed the tree was clean LF. The same mistake in
+`tests/test-remote.sh` passed on Linux and failed only on Windows.
+
+Two things that do work:
+
+- `tr -cd '\r' < file | wc -c` counts CR bytes and agreed with git every time.
+- Comparing the file's size on disk to its blob's size. A file rewritten to CRLF
+  is longer by exactly its line count, and neither `stat` nor a pipe translates
+  anything. This is what CI uses to prove `.gitattributes` held, and it reported
+  32 files byte-identical to their blobs against a real `core.autocrlf=true`.
+
+### What is still not covered
+
+`rt_ps` needs the target to run an SSH server. A Windows estate that only
+permits WinRM has no route here, and nothing in this repo speaks WinRM or PSRP.
+`rt_ps` also hardcodes `powershell`, which is Windows PowerShell 5.1; a target
+with pwsh 7 installed will not use it.

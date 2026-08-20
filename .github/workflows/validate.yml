@@ -350,6 +350,160 @@ jobs:
             exit 1
           fi
 
+  # Everything else in this file runs on ubuntu-latest, and for a while that was
+  # the whole of CI while the toolkit grew a Windows control node. That left the
+  # parts that ONLY exist on Windows running nowhere:
+  #
+  #   - agent.ps1's bash discovery, including the registry lookup that is the
+  #     only thing which finds bash.exe on a default Git for Windows install,
+  #     and the System32 exclusion that keeps WSL out of it
+  #   - ps_step against Windows PowerShell 5.1. The Linux job uses pwsh 7, and
+  #     5.1 is what a Server 2022 box actually has
+  #   - the line-ending probe's CR-TOLERANT branch, which by construction can
+  #     never be taken on Linux
+  #   - .gitattributes doing its job against a real core.autocrlf=true
+  #
+  # This repo is public, so windows-latest costs nothing. There was no reason
+  # for the gap other than not having looked.
+  windows:
+    name: The toolkit runs on Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: What this runner actually has
+        shell: pwsh
+        run: |
+          "git      : $((Get-Command git -EA SilentlyContinue).Source)"
+          "bash     : $((Get-Command bash -EA SilentlyContinue).Source)"
+          "autocrlf : $(git config --get core.autocrlf)"
+          foreach ($k in 'HKLM:\SOFTWARE\GitForWindows','HKLM:\SOFTWARE\WOW6432Node\GitForWindows') {
+            try { "$k -> $((Get-ItemProperty $k -Name InstallPath -EA Stop).InstallPath)" }
+            catch { "$k -> absent" }
+          }
+
+      # SIZE ON DISK vs SIZE IN THE BLOB, and not a grep, because on Git bash the
+      # obvious grep lies. `grep -lrU $'\r'` reported every .sh file as CRLF here
+      # while `tr`, `git status` and the blob all said the tree was clean LF:
+      # MSYS grep and MSYS shell redirection disagree about text translation, so
+      # a CR-hunting grep is not a measurement you can trust on this platform.
+      #
+      # A file rewritten to CRLF is longer than its blob by exactly its line
+      # count, and neither `stat` nor a pipe does any translation, so this
+      # compares two numbers that cannot be argued with.
+      - name: .gitattributes survived the checkout, so a Linux clone would work
+        shell: bash
+        run: |
+          set -uo pipefail
+          bad=0
+          checked=0
+          while IFS= read -r f; do
+            [ -f "$f" ] || continue
+            checked=$((checked + 1))
+            disk=$(stat -c %s "$f")
+            blob=$(git cat-file blob "HEAD:$f" | wc -c | tr -d ' ')
+            if [ "$disk" != "$blob" ]; then
+              bad=$((bad + 1))
+              lines=$(git cat-file blob "HEAD:$f" | wc -l | tr -d ' ')
+              echo "  $f: $disk bytes on disk, $blob in the blob, difference $((disk - blob)) over $lines lines"
+              echo "     attrs: $(git check-attr text eol -- "$f" | tr '\n' ' ')"
+            fi
+          done < <(git ls-files '*.sh' '*.ps1')
+          echo "compared $checked files against their blobs"
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::no files were compared, so this check verified nothing"
+            exit 1
+          fi
+          if [ "$bad" -ne 0 ]; then
+            echo "  core.autocrlf: $(git config --get core.autocrlf)"
+            echo "::error::$bad file(s) differ in size from their blob, so eol=lf was not honoured and a Linux clone of this repo would get CRLF"
+            exit 1
+          fi
+          echo "every file is byte-identical to its blob, so eol=lf held against core.autocrlf=$(git config --get core.autocrlf)"
+
+      - name: agent.ps1 finds bash and hands over
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path tw | Out-Null
+          bash ./skills/heliograph/scripts/bootstrap.sh tw 2>&1 | Out-Null
+          Push-Location tw
+          git init -q .
+          git config user.email ci@example.invalid
+          git config user.name ci
+          $out = & powershell.exe -NoProfile -File .\agent.ps1 --check 2>&1 | Out-String
+          Pop-Location
+          Write-Output $out
+          # The launcher must locate bash. On a default install bash.exe is NOT
+          # on PATH, so this failing means the registry lookup broke.
+          if ($out -notmatch 'agent\.ps1: using .*bash\.exe') {
+            Write-Output "::error::agent.ps1 did not report the bash it selected"; exit 1
+          }
+          # And having found it, the preflight must actually have run.
+          foreach ($needle in 'sed -u', 'base64 -w0', 'line endings') {
+            if ($out -notmatch [regex]::Escape($needle)) {
+              Write-Output "::error::preflight did not report '$needle', so handover did not happen"; exit 1
+            }
+          }
+          Write-Output "agent.ps1 found bash and start.sh ran its preflight"
+          # start.sh --check exits non-zero here ON PURPOSE: this throwaway repo
+          # has no origin, so the credential and push checks cannot pass and
+          # should not. What this step tests is that agent.ps1 located bash and
+          # handed over, which the assertions above have just proved from the
+          # preflight's own output. Whether the preflight reaches the right
+          # verdict about a credential is tested on Linux, where a remote exists.
+          Write-Output "start.sh --check exited $LASTEXITCODE, expected non-zero with no origin"
+          exit 0
+
+      - name: The CR-tolerant branch of the line-ending probe, which Linux cannot reach
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          cd tw
+          out=$(./start.sh --check 2>&1 | grep -i 'line endings')
+          echo "$out"
+          case "$out" in
+            *"tolerates CR"*) echo "took the tolerant branch, as Git for Windows should" ;;
+            FAIL*) echo "::error::the preflight blocked on a Windows control node that works"; exit 1 ;;
+            *) echo "::error::unexpected line-endings verdict: $out"; exit 1 ;;
+          esac
+
+      - name: A PowerShell step through the real capture, on Windows PowerShell
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          cd tw
+          PUSH=0 ./run.sh win >/dev/null 2>&1; rc=$?
+          log=$(ls -t ops-logs/win-*.txt 2>/dev/null | head -1)
+          [ -n "$log" ] || { echo "::error::no log produced by the win step"; exit 1; }
+          [ "$rc" = "0" ] || { echo "::error::win-snapshot reported failure ($rc); the exit code is leaking again"; exit 1; }
+          cr=$(tr -cd '\r' < "$log" | wc -c | tr -d ' ')
+          esc=$(tr -cd '\033' < "$log" | wc -c | tr -d ' ')
+          stamped=$(grep -cE '^[0-9]{2}:[0-9]{2}:[0-9]{2} \| ' "$log")
+          echo "log=$log rc=$rc cr=$cr esc=$esc stamped=$stamped"
+          [ "$cr"  = "0" ] || { echo "::error::$cr CR bytes reached the log"; exit 1; }
+          [ "$esc" = "0" ] || { echo "::error::$esc ANSI bytes reached the log"; exit 1; }
+          [ "$stamped" -gt 0 ] || { echo "::error::no timestamped lines in the log"; exit 1; }
+          grep -q 'identity' "$log" || { echo "::error::the step's own output is missing"; exit 1; }
+
+      - name: The suite's Windows-relevant files, unskipped
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          rc=0
+          for f in tests/test-powershell.sh tests/test-remote.sh; do
+            echo "--- $f"
+            ./$f 2>&1 | tee "/tmp/$(basename "$f").out"
+            [ "${PIPESTATUS[0]}" -eq 0 ] || rc=1
+            if grep -q '^SKIP' "/tmp/$(basename "$f").out"; then
+              echo "::error::$f skipped an assertion on Windows, where it should not"; rc=1
+            fi
+          done
+          exit $rc
+
   # Single required check for branch protection. Adding a job above does not mean
   # remembering to add it to the protection rule - it only needs listing here.
   ci-ok:
@@ -362,6 +516,7 @@ jobs:
       - toolkit
       - tests
       - container
+      - windows
       - powershell
     steps:
       - name: Fail if any job did not succeed
