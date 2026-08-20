@@ -382,35 +382,44 @@ jobs:
             catch { "$k -> absent" }
           }
 
-      # Reports the evidence rather than just the verdict. A check that says a
-      # file is wrong without showing what git thinks about it sends the reader
-      # back to a Windows runner they cannot log in to, which is the failure
-      # this whole repo is about.
-      - name: .gitattributes survived the checkout, so bash can read the toolkit
+      # SIZE ON DISK vs SIZE IN THE BLOB, and not a grep, because on Git bash the
+      # obvious grep lies. `grep -lrU $'\r'` reported every .sh file as CRLF here
+      # while `tr`, `git status` and the blob all said the tree was clean LF:
+      # MSYS grep and MSYS shell redirection disagree about text translation, so
+      # a CR-hunting grep is not a measurement you can trust on this platform.
+      #
+      # A file rewritten to CRLF is longer than its blob by exactly its line
+      # count, and neither `stat` nor a pipe does any translation, so this
+      # compares two numbers that cannot be argued with.
+      - name: .gitattributes survived the checkout, so a Linux clone would work
         shell: bash
         run: |
           set -uo pipefail
-          bad=$(grep -lrU $'\r' --include='*.sh' --exclude-dir=.git . || true)
-          if [ -z "$bad" ]; then
-            echo "no .sh file in the checkout contains a CR"
-            exit 0
+          bad=0
+          checked=0
+          while IFS= read -r f; do
+            [ -f "$f" ] || continue
+            checked=$((checked + 1))
+            disk=$(stat -c %s "$f")
+            blob=$(git cat-file blob "HEAD:$f" | wc -c | tr -d ' ')
+            if [ "$disk" != "$blob" ]; then
+              bad=$((bad + 1))
+              lines=$(git cat-file blob "HEAD:$f" | wc -l | tr -d ' ')
+              echo "  $f: $disk bytes on disk, $blob in the blob, difference $((disk - blob)) over $lines lines"
+              echo "     attrs: $(git check-attr text eol -- "$f" | tr '\n' ' ')"
+            fi
+          done < <(git ls-files '*.sh' '*.ps1')
+          echo "compared $checked files against their blobs"
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::no files were compared, so this check verified nothing"
+            exit 1
           fi
-          echo "files containing a CR:"
-          printf '%s\n' "$bad"
-          for f in $bad; do
-            echo "--- $f"
-            echo "  attrs   : $(git check-attr text eol -- "$f" | tr '\n' ' ')"
-            echo "  status  : [$(git status --porcelain -- "$f")]"
-            echo "  crlf-eol: $(grep -cU $'\r$' "$f" || true) lines end in CR"
-            echo "  cr-total: $(tr -cd '\r' < "$f" | wc -c) CR bytes"
-            echo "  blob-cr : $(git cat-file blob "HEAD:$f" 2>/dev/null | tr -cd '\r' | wc -c) CR bytes in the committed blob"
-            echo "  context :"
-            grep -nU $'\r' "$f" | head -3 | cat -v | sed 's/^/    /'
-          done
-          echo "  git config core.autocrlf : $(git config --get core.autocrlf)"
-          echo "  git config core.eol      : $(git config --get core.eol)"
-          echo "::error::CRLF in the checked-out tree despite .gitattributes"
-          exit 1
+          if [ "$bad" -ne 0 ]; then
+            echo "  core.autocrlf: $(git config --get core.autocrlf)"
+            echo "::error::$bad file(s) differ in size from their blob, so eol=lf was not honoured and a Linux clone of this repo would get CRLF"
+            exit 1
+          fi
+          echo "every file is byte-identical to its blob, so eol=lf held against core.autocrlf=$(git config --get core.autocrlf)"
 
       - name: agent.ps1 finds bash and hands over
         shell: pwsh
