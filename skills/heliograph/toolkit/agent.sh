@@ -180,7 +180,7 @@ publish_status() {
   git diff --cached --quiet -- "$STATUS" ${alsofile:+"$alsofile"} >/dev/null 2>&1 && return 0
   git -c user.name="${GIT_AUTHOR_NAME:-agent}" \
       -c user.email="${GIT_AUTHOR_EMAIL:-agent@$(hostname)}" \
-      commit -q -m "agent: $state ($id)" -- "$STATUS" ${alsofile:+"$alsofile"} 2>/dev/null
+      commit -q -m "agent: $state ($id) ***NO_CI***" -- "$STATUS" ${alsofile:+"$alsofile"} 2>/dev/null
   cap_git pull --rebase --quiet >/dev/null 2>&1
   cap_git push --quiet >/dev/null 2>&1 || cap_git push --quiet -u origin HEAD >/dev/null 2>&1 || \
     say "status push failed (will retry on the next transition)"
@@ -225,7 +225,7 @@ publish_progress() {
   git diff --cached --quiet -- "$STATUS" "$logfile" >/dev/null 2>&1 && return 0
   git -c user.name="${GIT_AUTHOR_NAME:-agent}" \
       -c user.email="${GIT_AUTHOR_EMAIL:-agent@$(hostname)}" \
-      commit -q -m "agent: progress ($id) ${lines} lines" -- "$STATUS" "$logfile" 2>/dev/null
+      commit -q -m "agent: progress ($id) ${lines} lines ***NO_CI***" -- "$STATUS" "$logfile" 2>/dev/null
   cap_git push --quiet >/dev/null 2>&1 ||
     say "progress push rejected (remote moved) - will retry; the final push reconciles"
 }

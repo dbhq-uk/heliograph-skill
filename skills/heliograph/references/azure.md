@@ -627,17 +627,91 @@ GitHub gives a second guard for free, because a push made with the built-in
 equivalent**, so there the path filter is the only structural guard and
 `***NO_CI***` in the commit message is the second.
 
-**The GitHub Actions file is proven. The Azure DevOps one has never been run.**
-No organisation was available to test it against. It was written from the same
-design and it parses, but the trigger and the loop guard are unverified, and the
-loop guard is exactly the part that has no platform safety net on Azure DevOps.
-Watch the first few runs.
+**Both files are now proven.** The Azure DevOps one ran end to end against a
+real organisation on 2026-08-24: request pushed, agent picked it up, step ran,
+log pushed back, and the log push did not re-fire the trigger. Everything in the
+next section was found during that first run.
 
 **Use `--once`, never the polling loop.** A pipeline job holds the agent for its
 whole duration, and polling git for an hour would block everyone else's builds.
 
 The limit: a step that takes two hours holds a build agent for two hours. For
 long-running work use a VM or a container.
+
+### What the first Azure DevOps run cost
+
+Four things, in the order they bite. Each looked like a different problem than
+it was, which is what made them expensive.
+
+**A new pipeline is not authorised for the pool or the repo, and the symptom is
+indistinguishable from an outage.** The run sits at `notStarted`. It never
+appears in the pool's job request list, so no agent is ever asked for and none
+comes up - and if the pool uses on-demand agents, you will find them all
+`offline` and conclude the pool is dead. It is not. The evidence is in the
+build's own timeline:
+
+```
+Checkpoint.Authorization   state=inProgress
+Job                        (absent - nothing dispatched)
+```
+
+Queue the pipeline once from the web UI and click **Authorize** on the banner it
+shows, or grant it directly. The `queue` resource is the agent pool; do the
+repository too, or the checkout fails next:
+
+```
+PATCH https://dev.azure.com/{org}/{projectId}/_apis/pipelines/pipelinePermissions/queue/{queueId}?api-version=7.1-preview.1
+PATCH .../pipelinePermissions/repository/{projectId}.{repoId}?api-version=7.1-preview.1
+{"pipelines":[{"id":<definitionId>,"authorized":true}]}
+```
+
+Once authorised, the wait was seconds, not minutes: an agent came online and
+started the job almost immediately.
+
+**The build service needs Contribute on the transport repo, and finding its
+identity is its own trap.** Without it the run looks clean and no log arrives -
+`start.sh`'s preflight catches this as a failing `git write` check. Granting it
+needs a *subject descriptor*, and `az devops security permission update` rejects
+both the display name and the `Microsoft.TeamFoundation.ServiceIdentity;...`
+form with errors that name neither problem:
+
+```
+Could not cast or convert from System.String to ...IdentityDescriptor.
+The string must have at least one character. Parameter name: descriptors element.IdentityType
+```
+
+Only the Graph `svc.*` descriptor works. Read it from the identity itself:
+
+```
+GET https://vssps.dev.azure.com/{org}/_apis/identities?searchFilter=DisplayName&filterValue={Project}%20Build%20Service%20({Org})&api-version=7.1-preview.1
+```
+
+then pass its `subjectDescriptor` as `--subject`, with `--allow-bit 6` (2 Read +
+4 Contribute) on namespace `2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87` and token
+`repoV2/{projectId}/{repoId}`.
+
+**The checkout is a detached HEAD.** Azure DevOps checks out a commit, not a
+branch, and `agent.sh` refuses to start on one. That refusal is correct - a
+commit on a detached HEAD goes nowhere, so the captured log would be written,
+committed, and destroyed with the workspace. The template now re-attaches with
+`git checkout -B "${BUILD_SOURCEBRANCH#refs/heads/}"` before anything else.
+
+**`$(...)` in an inline script is Azure DevOps macro syntax**, expanded before
+bash sees the line. `$(hostname)` in the old template only worked because no
+variable of that name existed. Use `${VAR}` for shell variables.
+
+### The definition's default queue is not what picks the pool
+
+Worth knowing because it wastes an afternoon otherwise: `az pipelines create`
+sets a definition-level default queue, and it may pick something long dead -
+ours chose `Hosted Ubuntu 1604`, retired in 2021. That is **not** what routes
+the job. The `pool:` in the YAML wins, and a pipeline whose definition names a
+retired pool still runs correctly on the self-hosted pool its YAML names.
+Confirmed by watching a run whose definition said `Hosted Ubuntu 1604` execute
+on a self-hosted agent.
+
+So if a run will not start, read the timeline for a checkpoint before touching
+the queue.
 
 ### A Kubernetes cluster they already run
 

@@ -67,7 +67,9 @@ fi
 cap_header "$OUT" "CAPTURED RUN: $LABEL" "command: $*"
 cap_run "$OUT" "$@"; RC=$?
 cap_footer "$OUT" "$RC"
-cap_push "$OUT" "run: $LABEL ($STAMP) exit=$RC"
+# ***NO_CI*** - see the matching comment in run.sh. A log push must not be able
+# to re-trigger the pipeline that produced it.
+cap_push "$OUT" "run: $LABEL ($STAMP) exit=$RC ***NO_CI***"
 
 cap_result "$LABEL" "$RC" "$OUT"
 exit "$RC"
