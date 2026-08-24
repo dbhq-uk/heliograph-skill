@@ -98,6 +98,37 @@ Verify the outcome, not the exit code. If a step is supposed to push, have it
 print what the remote says afterwards. If it is supposed to apply, read the
 resource back. The exit code is the weakest evidence in the log.
 
+## 12. One request, one runner. Bind them to different branches
+
+Two runners on one transport repo will both answer the same request, and there
+is no lock that stops them. Each agent records the last id it handled in
+`.agent-state`, which is gitignored because it is a fact about one machine, so
+neither can see what the other has done. A build agent makes it worse: a
+pipeline that cleans its workspace starts every job with no state file at all,
+so it answers whatever id it finds, every time.
+
+The failure looks like success. Two logs for one question, from two machines,
+seconds apart, both green - and the whole value of a heliograph log is that it
+says what *one* machine saw. You will not notice until two logs disagree and you
+cannot tell which one is about the box you care about.
+
+Bind each runner to its own branches, so they read different copies of
+`agent/request` and have nothing to race on:
+
+```
+main, pipeline/*  ->  the build agent   (trigger.branches.include)
+vm/*              ->  the VM agent      (./start.sh --branch vm/<slug>)
+```
+
+Do not bind `task/*` to a runner. It is the branch name this documentation uses
+for an investigation, so it is the first thing anyone reaches for when starting
+work on the *other* runner - which is exactly how both end up on one request.
+
+The trigger config stops the run being created; add a guard in the job that
+refuses a branch outside its set, because queueing a run by hand from a web UI
+bypasses trigger evaluation entirely. A loud failure beats a silent double
+answer.
+
 ---
 
 Three more rules apply once the branch carries a *change* and not only a
