@@ -153,7 +153,13 @@ fi
 
 cap_run "$OUT" "${CMD[@]}"; RC=$?
 cap_footer "$OUT" "$RC"
-cap_push "$OUT" "step: $STEP ($STAMP) exit=$RC"
+# ***NO_CI*** is not decoration. When the runner is a build agent, this push is
+# a commit to the same repo the pipeline watches, so without a marker the log
+# push re-triggers the pipeline, which pushes a log, which re-triggers it.
+# GitHub Actions refuses to trigger on a GITHUB_TOKEN push and needs no help;
+# Azure DevOps has no equivalent, so this is the only guard that travels with
+# the commit rather than living in one host's trigger configuration.
+cap_push "$OUT" "step: $STEP ($STAMP) exit=$RC ***NO_CI***"
 
 cap_result "step $STEP" "$RC" "$OUT"
 exit "$RC"
