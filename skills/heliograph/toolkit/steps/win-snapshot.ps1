@@ -14,6 +14,16 @@
 
 $ErrorActionPreference = 'Continue'
 
+# The tally, and it is load-bearing. Without it this script printed "FAILED" on
+# every probe and still exited 0, so run.sh wrote "RESULT: OK" over a log in
+# which nothing had worked. Found by running it on Linux, where pwsh exists but
+# Get-CimInstance and Get-WinEvent do not: twenty-odd probes failed, the footer
+# said OK, and one probe even reported "no pending reboot" as a positive finding
+# about a machine that has no such concept. Method rule 11 says a green exit
+# means the probes that ran passed - this did not even mean that.
+$script:ProbeTotal = 0
+$script:ProbeFailures = 0
+
 function Section($name) {
     Write-Output ""
     Write-Output "--- $name ---"
@@ -23,16 +33,38 @@ function Section($name) {
 # refused, and the point of a snapshot is the other twenty answers, not the
 # first failure. This is the PowerShell spelling of the toolkit's `probe`.
 function Probe($name, [scriptblock]$body) {
+    $script:ProbeTotal++
     try {
         $out = & $body 2>&1
+        # A caught terminating error is not the only way a probe fails. An
+        # unrecognised cmdlet arrives here as an ErrorRecord in $out with the
+        # pipeline still succeeding, so count that too or a missing command
+        # reads as a clean answer.
+        $errs = @($out | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] })
+        if ($errs.Count -gt 0) {
+            $script:ProbeFailures++
+            Write-Output "${name}: FAILED - $($errs[0].Exception.Message)"
+            return
+        }
         if ($null -eq $out -or ($out -is [array] -and $out.Count -eq 0)) {
             Write-Output "${name}: (no result)"
         } else {
             Write-Output $out
         }
     } catch {
+        $script:ProbeFailures++
         Write-Output "${name}: FAILED - $($_.Exception.Message)"
     }
+}
+
+# The PowerShell spelling of probe_summary. Same contract: print the tally and
+# exit non-zero if anything failed, so run.sh's footer tells the truth.
+function Probe-Summary {
+    Write-Output ""
+    Write-Output "---------- summary ----------"
+    Write-Output "probes: $script:ProbeTotal   failed: $script:ProbeFailures"
+    if ($script:ProbeFailures -gt 0) { exit 1 }
+    exit 0
 }
 
 Section "identity"
@@ -155,3 +187,5 @@ Probe "reboot" {
     }
     if ($reasons.Count) { "pending reboot: $($reasons -join ', ')" } else { 'no pending reboot' }
 }
+
+Probe-Summary
