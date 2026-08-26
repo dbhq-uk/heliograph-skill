@@ -323,10 +323,39 @@ while :; do
   # whatever those invoke - can be signalled together; killing just the child
   # would orphan whatever it spawned.
   if [ -n "$ENVLINE" ]; then
-    # Unquoted on purpose: `env: CONFIRM=yes FOO=bar` must split into separate
-    # assignments. It comes from a file only Claude writes, in this repo.
-    # shellcheck disable=SC2086
-    run_detached env $ENVLINE ./run.sh "$STEP"
+    # `env: CONFIRM=yes FOO=bar` has to split into separate assignments, so this
+    # cannot simply be quoted. Plain word-splitting cannot be the whole answer
+    # either: `env: HOSTS="a b" PORTS=443` then reaches env as four words, the
+    # first assignment and three commands, and the step dies with
+    #     env: 'b': No such file or directory        exit 127
+    # which reads as a broken step rather than as a malformed request. A value
+    # with a space in it is not exotic - HOSTS is the toolkit's own documented
+    # example of one.
+    #
+    # So: split the line the way a shell would, honouring quotes, but refuse
+    # anything that could DO something rather than assign something. The
+    # request file is already a trusted control channel - it names the step to
+    # run - but "trusted" is not a reason to hand it a subshell, and a refusal
+    # naming the character costs one round trip less than a surprise.
+    case "$ENVLINE" in
+      *'$'* | *'`'* | *';'* | *'&'* | *'|'* | *'<'* | *'>'* | *'('* )
+        say "REFUSED: env line contains a shell metacharacter, which this does not evaluate"
+        say "  env: $ENVLINE"
+        say "  Use plain NAME=value pairs; quote a value that contains spaces."
+        publish_status "refused" "$ID" "$STEP" "reason:   env line contains a shell metacharacter"
+        LAST_ID="$ID"; echo "$ID" > "$STATE_FILE"
+        [ "$ONCE" = "1" ] && cleanup
+        continue ;;
+    esac
+    eval "ENVARR=($ENVLINE)" 2>/dev/null || {
+      say "REFUSED: env line is not parseable as NAME=value pairs"
+      say "  env: $ENVLINE"
+      publish_status "refused" "$ID" "$STEP" "reason:   env line is not parseable"
+      LAST_ID="$ID"; echo "$ID" > "$STATE_FILE"
+      [ "$ONCE" = "1" ] && cleanup
+      continue
+    }
+    run_detached env "${ENVARR[@]}" ./run.sh "$STEP"
   else
     run_detached ./run.sh "$STEP"
   fi
