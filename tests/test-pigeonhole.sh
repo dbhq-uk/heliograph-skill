@@ -137,10 +137,18 @@ run_agent_then_send() {  # run_agent_then_send <repo> <store> <bin> <lane> <line
       ./pigeonhole.sh >"$store/.console" 2>&1 ) &
   local agent=$!
 
-  # Wait for the first status write, which is proof it has started polling
-  # rather than a guess at how long that takes.
+  # WAIT FOR THE FIRST POLL TO HAVE FINISHED, not merely for the agent to be
+  # alive. The status blob is the wrong signal: it is written on startup,
+  # BEFORE the first poll, so a request dropped in on seeing it can still land
+  # while FIRST_POLL is set - and then it is absorbed as the startup id and
+  # never runs. That failed on CI and passed locally, which is the signature of
+  # exactly this race.
+  #
+  # This line is printed only after a poll has found no request, so it proves
+  # the agent is in its steady state and the next id it sees will be a change.
   local waited=0
-  while [ ! -f "$store/status/${lane}.txt" ] && [ "$waited" -lt 100 ]; do
+  while ! grep -q "no request at" "$store/.console" 2>/dev/null; do
+    [ "$waited" -ge 200 ] && break
     sleep 0.1; waited=$((waited + 1))
   done
 
