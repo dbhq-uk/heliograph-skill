@@ -29,7 +29,10 @@ echo "STEP: which tools exist on this runner, and what would an image need to ad
 
 # --- what the host is --------------------------------------------------------
 sec "host"
-probe_opt "os" sh -c 'cat /etc/os-release 2>/dev/null | head -5'
+# NOT `| head`. The whole file is a dozen short lines and the gate in
+# validate.yml refuses a probe that truncates its own evidence - rightly, since
+# the line you cut is the one you needed.
+probe_opt "os" sh -c 'cat /etc/os-release 2>/dev/null'
 probe_opt "kernel" uname -a
 probe_opt "user" id
 

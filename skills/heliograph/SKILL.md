@@ -165,13 +165,13 @@ Every runner, function and knob: [references/runner.md](references/runner.md).
 ### When the control node cannot reach git at all
 
 Everything above assumes the control node can reach the git host. Sometimes it
-cannot — a locked-down subnet whose default route goes to a firewall with no
+cannot - a locked-down subnet whose default route goes to a firewall with no
 policy for it has no outbound path at all, and git stops being a transport and
 becomes a dependency that cannot be met.
 
 `pigeonhole.sh` and `drop.sh` carry the same contract over Azure Blob Storage
 instead. You write the request to a container, the agent polls it and writes the
-log back, and neither side ever reaches the other — a private endpoint is
+log back, and neither side ever reaches the other - a private endpoint is
 VNet-local, so that traffic never touches the route that is blocking everything
 else. The capture is untouched: it still calls `run.sh`, so the log is the same
 document.
@@ -182,7 +182,7 @@ document.
 ```
 
 **Measure before reaching for it.** Git is better when git works, and an image
-pull succeeding proves nothing — a container platform pulls on its own side, so
+pull succeeding proves nothing - a container platform pulls on its own side, so
 a container can start cleanly on a host with no network at all. When to use it,
 how the lane replaces branch binding, and the traps:
 [references/pigeonhole.md](references/pigeonhole.md).
