@@ -27,6 +27,7 @@ DEFAULT_STEP="env"
 #      env    control-node snapshot: OS, tools, auth, proxy, DNS, git   [default]
 #      net    connectivity matrix to HOSTS on PORTS: DNS, ICMP, TCP
 #      win    Windows control-node snapshot: OS, hotfixes, services, events
+#      tools  what this host can do: every tool, python module and ODBC driver
 #    ACTIONS (change something - name them explicitly, never make one default)
 #      (none on main)
 # ==============================================================
@@ -115,6 +116,7 @@ case "$STEP" in
   env)  CMD=(./steps/env-snapshot.sh) ;;
   net)  CMD=(./steps/net-probe.sh) ;;
   win)  ps_step ./steps/win-snapshot.ps1 ;;
+  tools) CMD=(./steps/tools-inventory.sh) ;;
 
   # -- add task steps here (task branches only) -----------------------------
   # tfplan)  CMD=(./steps/tf-plan.sh) ;;
