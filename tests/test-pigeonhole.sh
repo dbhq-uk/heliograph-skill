@@ -91,6 +91,17 @@ STEP
   sed -i 's|^  env)  CMD=(./steps/env-snapshot.sh) ;;|  env)  CMD=(./steps/env-snapshot.sh) ;;\n  echo-env) CMD=(./steps/echo-env.sh) ;;|' "$repo/run.sh"
 }
 
+# A glob, not `ls | grep`. Shellcheck refuses the latter (SC2010) and is right
+# to: a filename with a newline in it would be counted twice. Nothing here
+# generates such a name, but the CI gate is on shellcheck being clean, and a
+# test file arguing for an exception is a bad look in a repo whose whole point
+# is not trusting the plausible.
+count_matching() {  # count_matching <dir> <glob>
+  local dir="$1" pat="$2" n=0 f
+  for f in "$dir"/$pat; do [ -e "$f" ] && n=$((n + 1)); done
+  printf '%s' "$n"
+}
+
 write_request() {  # write_request <store> <lane> <body...>
   local store="$1" lane="$2"; shift 2
   mkdir -p "$store/requests"
@@ -167,7 +178,7 @@ write_request "$STORE" default "id: run-1" "step: echo-env" "env:" "cancel:" "st
 # every time, unwatched, with the reruns indistinguishable from real ones.
 run_agent "$REPO" "$STORE" "$BIN"
 assert_eq "an id present at startup does not run" "0" \
-  "$(ls "$STORE/logs" 2>/dev/null | wc -l | tr -d ' ')"
+  "$(count_matching "$STORE/logs" '*')"
 assert_contains "and says so on the console" "already present" "$(cat "$STORE/.console")"
 
 # Now change it while the agent is up. THE TRIGGER IS THE id.
@@ -176,7 +187,7 @@ mkdir -p "$STORE"; make_fake_curl "$BIN" "$STORE"; make_repo "$REPO"
 run_agent_then_send "$REPO" "$STORE" "$BIN" default \
   "id: run-2" "step: echo-env" "env:" "cancel:" "stop:"
 assert_eq "a changed id runs the step exactly once" "1" \
-  "$(ls "$STORE/logs" 2>/dev/null | grep -c 'echo-env' | tr -d ' ')"
+  "$(count_matching "$STORE/logs" 'echo-env-*.txt')"
 assert_contains "the status reports the log it wrote" "log:      logs/echo-env-" \
   "$(cat "$STORE/status/default.txt")"
 assert_contains "and reports the exit code" "exit:     0" \
@@ -200,7 +211,7 @@ assert_contains "an unquoted value still works" "CONFIRM=[yes]" "$log"
 # command, which exits 127 before run.sh writes anything. Assert the log exists
 # at all, because "no log" is what the bug actually looked like.
 assert_eq "a log was produced at all" "1" \
-  "$(ls "$STORE/logs" 2>/dev/null | grep -c 'echo-env' | tr -d ' ')"
+  "$(count_matching "$STORE/logs" 'echo-env-*.txt')"
 
 # =============================================================================
 #  The lane is the binding, and two runners must never share one
@@ -212,9 +223,9 @@ write_request "$STORE" beta  "id: b-1" "step: echo-env" "env:" "cancel:" "stop:"
 
 run_agent "$REPO" "$STORE" "$BIN" PIGEONHOLE_LANE=alpha
 assert_eq "a runner writes status only to its own lane" "1" \
-  "$(ls "$STORE/status" 2>/dev/null | grep -c '^alpha.txt$' | tr -d ' ')"
+  "$(count_matching "$STORE/status" 'alpha.txt')"
 assert_eq "and never touches another lane's status" "0" \
-  "$(ls "$STORE/status" 2>/dev/null | grep -c '^beta.txt$' | tr -d ' ')"
+  "$(count_matching "$STORE/status" 'beta.txt')"
 assert_contains "the status names the lane it answered" "lane:     alpha" \
   "$(cat "$STORE/status/alpha.txt")"
 

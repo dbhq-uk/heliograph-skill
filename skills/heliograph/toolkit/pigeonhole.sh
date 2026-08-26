@@ -261,7 +261,6 @@ say "  actions : $([ "${PIGEONHOLE_NO_ACTIONS:-0}" = "1" ] && echo refused || ec
 publish_status "starting" "" ""
 
 LAST_ID=""
-LAST_CANCEL=""
 FIRST_POLL=1
 
 while :; do
@@ -273,20 +272,28 @@ while :; do
     STOP="$(field stop)"
     CANCEL="$(field cancel)"
 
-    # A cancel value already present when the agent starts is not an
-    # instruction - only a CHANGE is. Otherwise a leftover cancel from a
-    # previous investigation reaps the first real run of the next one.
     if [ "$FIRST_POLL" = "1" ]; then
-      LAST_CANCEL="$CANCEL"
-      # An id already in the drop at startup is likewise not a trigger. A
-      # container that restarts - and ACI restarts this one on failure - would
-      # otherwise re-run the last step every time it came back, with nobody
-      # watching and no way to tell the reruns apart.
+      # An id already in the drop at startup is not a trigger. A host whose
+      # restart policy brings it back would otherwise re-run the last step
+      # every time it came back, with nobody watching and no way to tell the
+      # reruns apart.
       LAST_ID="$ID"
       FIRST_POLL=0
       [ -n "$ID" ] && say "startup: id '${ID}' already present, not re-running it"
       publish_status "idle" "$ID" "$STEP"
       rm -f "$REQ_FILE"; sleep "$POLL"; continue
+    fi
+
+    # CANCEL IS NOT IMPLEMENTED HERE, AND SAYS SO RATHER THAN DOING NOTHING.
+    # agent.sh can cancel because it runs the step detached and stays
+    # responsive; this loop runs the step in the foreground and is deaf until
+    # it returns. Accepting the field silently would be the worst outcome:
+    # somebody writes `cancel: yes` to stop a wrong run, sees no error, and
+    # believes the run was reaped when it is still going.
+    if [ -n "$CANCEL" ]; then
+      say "NOTE: 'cancel' is set, and this transport does not implement it."
+      say "      The step runs in the foreground, so the loop cannot hear a"
+      say "      cancel while one is in flight. Stop the host to end a run."
     fi
 
     if [ "$STOP" = "yes" ]; then
@@ -378,7 +385,6 @@ while :; do
         exit 0
       fi
     fi
-    LAST_CANCEL="$CANCEL"
   else
     # No request blob yet is the normal resting state of a freshly created
     # drop, not an error. Say it once rather than every poll.
