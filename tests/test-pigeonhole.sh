@@ -214,6 +214,30 @@ assert_eq "a log was produced at all" "1" \
   "$(count_matching "$STORE/logs" 'echo-env-*.txt')"
 
 # =============================================================================
+#  The env line is split, not evaluated
+# =============================================================================
+# Honouring quotes is only half of it. The other half is refusing anything that
+# could DO something: the eval assigns an ARRAY, and a guard rejects shell
+# metacharacters before it gets that far. A refusal that names the character
+# costs one round trip less than a surprise on a host nobody can log into.
+STORE="$TMP/s2b"; REPO="$TMP/r2b"; BIN="$TMP/b2b"
+mkdir -p "$STORE"; make_fake_curl "$BIN" "$STORE"; make_repo "$REPO"
+CANARY="$TMP/canary-should-not-exist"
+run_agent_then_send "$REPO" "$STORE" "$BIN" default \
+  "id: injected" "step: echo-env" \
+  "env: HOSTS=\$(touch $CANARY)" "cancel:" "stop:"
+
+assert_eq "nothing was executed" "0" \
+  "$([ -e "$CANARY" ] && echo 1 || echo 0)"
+assert_eq "and no step ran" "0" \
+  "$(count_matching "$STORE/logs" 'echo-env-*.txt')"
+assert_contains "the status says why, not just that it refused" \
+  "reason:   env line contains a shell metacharacter" \
+  "$(cat "$STORE/status/default.txt" 2>/dev/null)"
+assert_contains "and the console quotes the line back" 'HOSTS=$(touch' \
+  "$(cat "$STORE/.console" 2>/dev/null)"
+
+# =============================================================================
 #  The lane is the binding, and two runners must never share one
 # =============================================================================
 STORE="$TMP/s3"; REPO="$TMP/r3"; BIN="$TMP/b3"

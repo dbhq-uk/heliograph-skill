@@ -329,7 +329,7 @@ while :; do
       # on this runner, and cap_push would fail loudly at the end of every
       # otherwise-successful run. LOG_DIR hands us the file instead.
       #
-      # THE ENV LINE IS RE-PARSED BY THE SHELL, not word-split, and the
+      # THE ENV LINE IS SPLIT THE WAY A SHELL WOULD, not word-split, and the
       # difference is not cosmetic. `env $ENV_EXTRA` unquoted looks like it
       # handles `HOSTS="a b" PORTS=443`, and it does not: parameter expansion
       # splits on spaces but performs NO quote removal, so env receives
@@ -337,18 +337,52 @@ while :; do
       # exit 127 and NO LOG AT ALL, because run.sh never starts - measured
       # 2026-08-26 on the first net request through the pigeonhole.
       #
-      # agent.sh word-splits the same field the same way and has the same
-      # latent bug; it has only ever been sent single-word values.
+      # The guard comes first, and it is the part worth keeping. The request is
+      # already a trusted control channel - it names the step to run - but
+      # trusted is not a reason to hand it a subshell, and the eval below
+      # assigns an ARRAY rather than running a command line, so a value that
+      # got past the guard still could not execute. Two locks, because the
+      # blast radius is a host nobody can log into to clean up.
       #
-      # eval is safe here in the only sense that matters: whoever can write
-      # this request can already name the step that runs, which is arbitrary
-      # code on this host. The env line adds no exposure that the step field
-      # did not already carry.
-      run_cmd="LOG_DIR=\"$RUN_DIR\" PUSH=0"
-      [ -n "$ENV_EXTRA" ] && { say "env: ${ENV_EXTRA}"; run_cmd="$run_cmd env $ENV_EXTRA"; }
-      run_cmd="$run_cmd \"$HERE/run.sh\""
-      [ -n "$STEP" ] && run_cmd="$run_cmd \"$STEP\""
-      eval "$run_cmd"
+      # A refusal naming the character costs one round trip less than a
+      # surprise. Same treatment as agent.sh, deliberately: one bug, one shape.
+      REFUSE=""
+      case "$ENV_EXTRA" in
+        *'$'* | *'`'* | *';'* | *'&'* | *'|'* | *'<'* | *'>'* | *'('* )
+          REFUSE="env line contains a shell metacharacter, which this does not evaluate" ;;
+      esac
+      if [ -z "$REFUSE" ] && [ -n "$ENV_EXTRA" ]; then
+        eval "ENVARR=($ENV_EXTRA)" 2>/dev/null || \
+          REFUSE="env line is not parseable as NAME=value pairs"
+      else
+        ENVARR=()
+      fi
+      if [ -n "$REFUSE" ]; then
+        say "REFUSED: ${REFUSE}"
+        say "  env: ${ENV_EXTRA}"
+        say "  Use plain NAME=value pairs; quote a value that contains spaces."
+        stop_progress
+        publish_status "refused" "$ID" "$STEP" "reason:   ${REFUSE}"
+        rm -rf "$RUN_DIR"
+        LAST_ID="$ID"
+        rm -f "$REQ_FILE"
+        # A REFUSAL IS AN ANSWER. `once` means answer one request and exit, and
+        # a request that was refused has been answered - the far side has a
+        # status saying so. Carrying on would leave a --once runner polling
+        # forever over a question it has already responded to.
+        if [ "${PIGEONHOLE_ONCE:-0}" = "1" ]; then
+          say "PIGEONHOLE_ONCE=1 - request refused, exiting"
+          exit 0
+        fi
+        sleep "$POLL"; continue
+      fi
+
+      [ -n "$ENV_EXTRA" ] && say "env: ${ENV_EXTRA}"
+      if [ "${#ENVARR[@]}" -gt 0 ]; then
+        LOG_DIR="$RUN_DIR" PUSH=0 env "${ENVARR[@]}" "$HERE/run.sh" ${STEP:+"$STEP"}
+      else
+        LOG_DIR="$RUN_DIR" PUSH=0 "$HERE/run.sh" ${STEP:+"$STEP"}
+      fi
       RC=$?
 
       stop_progress
