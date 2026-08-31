@@ -141,15 +141,65 @@ cap_result() {
 # a literal member, so `[^/@:?\#,...]` silently excludes BACKSLASH as well, and a
 # token containing one stops being masked. Measured, not assumed. `%` removes the
 # question.
+# THE RULES BELOW COME IN TWO KINDS, and the difference is worth keeping in mind
+# before adding a third.
+#
+# The first kind masks a credential by its POSITION: in a URL's userinfo, after
+# `password=`, after `Bearer`. Those need the careful anchoring argued about
+# above, because the surrounding text is ordinary and the pattern has to know
+# where to stop.
+#
+# The second kind masks it by its SHAPE - `ghp_`, `AKIA`, `xox`, a JWT's three
+# dot-separated segments - and each of those is a prefix a vendor documents and
+# publishes precisely so that scanners can recognise it. They earn their place
+# because a step prints them constantly (a git remote, an `aws sts` call, a curl
+# of an API) in a log that is committed and cannot be unpublished.
+#
+# `\b` is not decoration on the shape rules. Without it `sk-[A-Za-z0-9_-]{20,}`
+# masks the middle of "risk-assessment-and-remediation-plan", which is ordinary
+# English in a diagnostic log and exactly the over-masking this file argues
+# against everywhere else. GNU sed is already a stated requirement of this
+# toolkit - `sed -u` is what keeps the capture unbuffered - so \b is fair game.
 cap_redact() {
   if [ "${REDACT:-1}" = "0" ]; then cat; return 0; fi
   sed -u -E \
-    -e "s/((password|passwd|pwd|secret|token|api[_-]?key|client_secret|sas|connectionstring)[\"\x27]?[[:space:]]*[:=][[:space:]]*[\"\x27]?)[^\"\x27[:space:],;}]+/\1***REDACTED***/gI" \
+    -e "s/((password|passwd|pwd|secret|token|api[_-]?key|client_secret|accountkey|sas|connectionstring)[\"\x27]?[[:space:]]*[:=][[:space:]]*[\"\x27]?)[^\"\x27[:space:],;}]+/\1***REDACTED***/gI" \
     -e "s#(://[^/@:[:space:]]*):[^/@[:space:]]*@#\1:***REDACTED***@#g" \
     -e "s%(https?://)[^/@:?#,[:space:]]*@%\1***REDACTED***@%gI" \
     -e "s/(Bearer[[:space:]]+)[A-Za-z0-9._~+\/-]{16,}=*/\1***REDACTED***/g" \
     -e "s/(Basic[[:space:]]+)[A-Za-z0-9+\/]{16,}=*/\1***REDACTED***/g" \
+    -e "s/(Authorization:[[:space:]]*[A-Za-z]+[[:space:]]+)[^[:space:]]{8,}/\1***REDACTED***/gI" \
+    -e "s/\b(gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})/***REDACTED***/g" \
+    -e "s/\b(AKIA|ASIA)[0-9A-Z]{16}\b/***REDACTED***/g" \
+    -e "s/\bxox[abposr]-[A-Za-z0-9-]{10,}/***REDACTED***/g" \
+    -e "s/\bglpat-[A-Za-z0-9_-]{16,}/***REDACTED***/g" \
+    -e "s/\bsk-[A-Za-z0-9_-]{20,}/***REDACTED***/g" \
+    -e "s/\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/***REDACTED***/g" \
     -e "s/-----BEGIN [A-Z ]*PRIVATE KEY-----/***REDACTED PRIVATE KEY***/g"
+}
+
+# --- the account IS the blast radius -----------------------------------------
+# This toolkit holds no credentials: no cloud auth, no API keys, nothing but the
+# git remote. So the honest answer to "what could this do to the estate" is
+# "whatever the account running it could do", and that answer is only useful if
+# the account is not root.
+#
+# Refused rather than warned about. A warning in a captured log is read after
+# the run, by which time the run has happened. `ALLOW_ROOT=1` is there for the
+# appliance or minimal image that genuinely has no other user - the shipped
+# container and Kubernetes manifest both run as uid 1000 and need none of this.
+#
+# `id -u` rather than $EUID, because this is also called from scripts that a
+# future dash or busybox shell might read, and because a test can put a fake
+# `id` on PATH and exercise the refusal without being root.
+cap_refuse_root() {
+  [ "${ALLOW_ROOT:-0}" = "1" ] && return 0
+  [ "$(id -u 2>/dev/null || echo 1000)" = "0" ] || return 0
+  echo "refusing to run as root." >&2
+  echo "  This toolkit has no credentials of its own, so the account it runs as is" >&2
+  echo "  the whole blast radius. As root that is the machine." >&2
+  echo "  Run it as an unprivileged user, or set ALLOW_ROOT=1 if this image has no other." >&2
+  return 1
 }
 
 # --- stop the classic sudo hang before it starts -----------------------------

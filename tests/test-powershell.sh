@@ -203,6 +203,7 @@ fi
 
 # --- a real capture through the real runner ---------------------------------
 cat > "$TR/steps/t-clean.ps1" <<'EOF'
+# heliograph-mode: read-only
 Write-Output "plain line"
 [PSCustomObject]@{ Name = 'alpha'; Value = 1 } | Format-Table -AutoSize
 EOF
@@ -211,14 +212,17 @@ EOF
 # unset key exits 1, and an in-process invocation leaked that as the step's
 # exit code.
 cat > "$TR/steps/t-leak.ps1" <<'EOF'
+# heliograph-mode: read-only
 Write-Output "the step itself succeeded"
 git config --get heliograph.no.such.key 2>$null | Out-Null
 EOF
 cat > "$TR/steps/t-fail.ps1" <<'EOF'
+# heliograph-mode: read-only
 Write-Output "this one really did fail"
 exit 3
 EOF
 cat > "$TR/steps/t-slow.ps1" <<'EOF'
+# heliograph-mode: read-only
 Write-Output "first"
 Start-Sleep -Seconds 2
 Write-Output "second"
@@ -263,6 +267,7 @@ fi
 # ESC]8;;<url>, that sed only matches ESC[ sequences, and they reach the log.
 # This step emits one, so the assertion below is capable of failing.
 cat > "$TR/steps/t-link.ps1" <<'EOF'
+# heliograph-mode: read-only
 Write-Output "plain line"
 if ($PSStyle) { $PSStyle.FormatHyperlink("docs", "https://example.invalid") }
 EOF

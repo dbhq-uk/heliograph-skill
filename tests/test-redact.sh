@@ -181,6 +181,87 @@ assert_eq "the bare rule stops at the first path segment too" \
   "fetching https://registry.invalid/@scope/pkg/-/pkg-1.0.0.tgz" \
   "$(red "fetching https://registry.invalid/@scope/pkg/-/pkg-1.0.0.tgz")"
 
+# --- tokens that announce themselves -------------------------------------------
+# Everything above masks a credential by its POSITION - in a URL, after Bearer,
+# after `password=`. These mask it by its SHAPE instead, and only where the shape
+# is one a vendor documents and nothing else uses: `ghp_`, `AKIA`, `xox`, a JWT's
+# three dot-separated segments. A step prints these constantly - a git remote, an
+# aws sts call, a curl of an API - and each one lands in a history that cannot be
+# unpublished.
+#
+# The discipline is the same as everywhere else in this file: each shape gets a
+# masked case AND a left-alone case, because a rule that eats ordinary text costs
+# evidence out of the only record anyone gets.
+
+assert_eq "a GitHub PAT is masked wherever it appears" \
+  "token is ***REDACTED*** ok" \
+  "$(red "token is ghp_16CharsAndThenSomeMore00 ok")"
+
+assert_eq "the newer fine-grained PAT prefix too" \
+  "***REDACTED***" \
+  "$(red "github_pat_11ABCDEFG0abcdefghijklmnop")"
+
+assert_eq "an AWS access key id is masked" \
+  "aws_access_key_id = ***REDACTED***" \
+  "$(red "aws_access_key_id = AKIAIOSFODNN7EXAMPLE")"
+
+assert_eq "and the temporary-credential form of it" \
+  "***REDACTED***" \
+  "$(red "ASIAIOSFODNN7EXAMPLE")"
+
+assert_eq "a Slack token is masked" \
+  "***REDACTED***" \
+  "$(red "xoxb-EXAMPLE-NOT-A-REAL-TOKEN")"
+
+assert_eq "a GitLab PAT outside a URL is masked too" \
+  "***REDACTED***" \
+  "$(red "glpat-ABCDEFGHIJKLMNOPQRSTUV")"
+
+assert_eq "an sk- style API key is masked" \
+  "***REDACTED***" \
+  "$(red "sk-abcdefghijklmnopqrstuvwxyz0123")"
+
+assert_eq "a JWT is masked - three base64url segments and nothing else looks like that" \
+  "***REDACTED***" \
+  "$(red "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk")"
+
+# Only Bearer and Basic were covered, so `Authorization: Token abc…` - which is
+# GitHub's own documented header, and Zendesk's, and several others - went
+# through untouched.
+assert_eq "an Authorization header with any scheme is masked" \
+  "Authorization: Token ***REDACTED***" \
+  "$(red "Authorization: Token abcdef1234567890")"
+
+assert_eq "including the ones that were already covered" \
+  "Authorization: Bearer ***REDACTED***" \
+  "$(red "Authorization: Bearer abcdef1234567890abcdef")"
+
+assert_eq "an Azure storage account key is masked" \
+  "AccountKey=***REDACTED***;EndpointSuffix=core.windows.net" \
+  "$(red "AccountKey=abc123def456==;EndpointSuffix=core.windows.net")"
+
+# --- and what these rules must NOT eat -----------------------------------------
+# `sk-` is the dangerous one: `risk-assessment-and-remediation` contains a literal
+# `sk-` followed by thirty word characters. Without a word boundary the rule eats
+# ordinary English out of a diagnostic log.
+for keep in \
+  "the risk-assessment-and-remediation-plan is attached" \
+  "AKIA is a prefix, not a key" \
+  "AKIASHORT" \
+  "eyJustAWordThatStartsThatWay" \
+  "Authorization: Negotiate" \
+  "task-runner-for-the-cluster" \
+  "sk-short" \
+  "a commit like a1b2c3d4e5f6a7b8c9d0 is not a token"
+do
+  assert_eq "left alone: $keep" "$keep" "$(red "$keep")"
+done
+
+# The shape rules must not undo the anchoring the position rules were given. A
+# clone URL still masks once, as one span, rather than being chewed twice.
+assert_eq "a PAT inside a clone URL is still masked exactly once" "1" \
+  "$(red "https://ghp_16CharsAndThenSomeMore00@github.com/o/r.git" | grep -c REDACTED)"
+
 # REDACT=0 is the documented escape hatch for when masking hides what you need.
 assert_eq "REDACT=0 disables it, as documented" \
   "https://u:tok@h/x.git" \

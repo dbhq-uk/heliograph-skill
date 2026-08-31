@@ -1,6 +1,8 @@
 # =============================================================================
 #  _template.ps1 - copy this to start a PowerShell step
 # =============================================================================
+# heliograph-mode: read-only     # the runner refuses a step that declares nothing.
+#                                # Use `action` for a step that changes state.
 #  A step PRINTS TO STDOUT AND NOTHING ELSE.
 #
 #  It does not open the log, write timestamps, commit, or push. run.sh and

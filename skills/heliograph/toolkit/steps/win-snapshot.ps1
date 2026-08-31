@@ -1,6 +1,7 @@
 # =============================================================================
 #  win-snapshot.ps1 - what env-snapshot.sh is, for a Windows control node
 # =============================================================================
+# heliograph-mode: read-only
 #  Read-only. Prints to stdout and nothing else: run.sh owns the log, the
 #  timestamps and the push, so this never opens a file and never calls git.
 #

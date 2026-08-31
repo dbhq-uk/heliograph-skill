@@ -2,6 +2,7 @@
 # =============================================================================
 #  steps/env-snapshot.sh - what is this control node, really?
 # =============================================================================
+# heliograph-mode: read-only
 # The correct first step of ANY investigation on a box you can't log into.
 # It answers the questions that otherwise get assumed and turn out to be wrong:
 # which host, which user, which tool versions, is there a proxy in the way, what

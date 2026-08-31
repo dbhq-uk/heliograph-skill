@@ -32,9 +32,13 @@ step missing from it is invisible to the operator.
 - **Never prompt.** No interactive sudo (use `SUDO=1` on the runner, which
   pre-caches it), no host-key questions, no `read`. A prompt through the capture
   pipeline is invisible, and the run just hangs.
-- **Read-only by default.** Anything that changes state says so at the top of the
-  file and is added to the `CONFIRM=yes` gate in `run.sh`, so a stale
-  `DEFAULT_STEP` can never do damage on its own.
+- **Declare what it is, or it will not run.** Every step carries
+  `# heliograph-mode: read-only` or `# heliograph-mode: action` in its first 30
+  lines. `run.sh` reads that line out of the step's own file; a step declaring
+  neither is refused with exit 3, and an `action` needs `CONFIRM=yes` as well, so
+  a stale `DEFAULT_STEP` can never do damage on its own. Both templates already
+  carry the line - keep it when you copy one, and change it to `action` the
+  moment the step starts changing something.
 - **Never truncate.** No `head`, no `tail -20`, no `2>/dev/null` on the thing you
   are actually diagnosing.
 - **Carry a control.** Where you can, measure something known-good in the same

@@ -84,6 +84,14 @@ It needs `PIGEONHOLE_ACCOUNT`, or `TF_DIR` pointing at a terraform directory who
 
 **The trigger is the `id`, not a changed blob.** The request gets rewritten for all sorts of reasons - a corrected note, a fixed typo - and none of those should set a step running.
 
+## It is read-only unless you said otherwise
+
+Same posture as `agent.sh`, for the same reason: nobody is watching this runner either. A step that declares `# heliograph-mode: action` is refused unless the runner was started with `PIGEONHOLE_ALLOW_ACTIONS=1`, and the refusal is published to the status blob with the variable that would permit it. `PIGEONHOLE_NO_ACTIONS=1` is still honoured - it is now the default, and it stays in the templates that set it.
+
+The gate reads each step's own declaration through `run.sh --mode`. It used to be a prefix convention - `apply-*`, `deploy-*`, `fix-*`, `restart-*` - which could only ever see the steps whose authors had followed it.
+
+It also refuses to run as root unless `ALLOW_ROOT=1`. The account is the whole blast radius, and in a container that is worth being explicit about: the shipped image runs as uid 1000 already.
+
 ## What it does not change
 
 `pigeonhole.sh` calls `run.sh` with `LOG_DIR` and `PUSH=0`, so the capture itself is untouched: the same timestamps, the same ANSI stripping, the same redaction, the same header and footer. A log from the pigeonhole and a log from a git runner are the same document. Only the poll source and the publish sink differ.

@@ -6,6 +6,8 @@
 #     git pull && ./run.sh            # runs whatever step is currently set
 #     git pull && ./run.sh <step>     # or name one explicitly
 #     ./run.sh --list                 # what steps exist on this branch
+#     ./run.sh --mode <step>          # what that step DECLARES itself to be
+#     ./run.sh --file <step>          # which file that declaration came from
 #
 #  ...then say it's done. That's the whole workflow. Claude sets DEFAULT_STEP
 #  below and pushes; you pull and run; the log is captured and pushed back.
@@ -28,9 +30,26 @@ DEFAULT_STEP="env"
 #      net    connectivity matrix to HOSTS on PORTS: DNS, ICMP, TCP
 #      win    Windows control-node snapshot: OS, hotfixes, services, events
 #      tools  what this host can do: every tool, python module and ODBC driver
-#    ACTIONS (change something - name them explicitly, never make one default)
+#    ACTIONS (change something - never make one the default step)
 #      (none on main)
+#
+#    Which of the two a step is comes from the step's OWN FILE, not from this
+#    table and not from its name: `# heliograph-mode: read-only` or `action` in
+#    its first 30 lines. A step declaring neither will not run.
 # ==============================================================
+
+# --mode <step> answers what a step declares itself to be; --file <step> answers
+# which file that declaration was read from. Both exit having touched nothing.
+# agent.sh asks through here rather than reading the step table itself, so the
+# mapping from a step name to a file stays in ONE place - two copies of it would
+# drift the first time somebody registered a step that takes arguments.
+QUERY=""
+case "${1:-}" in
+  --mode) QUERY="mode"; shift ;;
+  --file) QUERY="file"; shift ;;
+esac
+MODE_QUERY=0
+[ -n "$QUERY" ] && MODE_QUERY=1
 
 STEP="${1:-$DEFAULT_STEP}"
 
@@ -92,6 +111,11 @@ fi
 #   process is worth it to stop a diagnostic lying about whether it worked.
 ps_step() {
   local script="$1" sh
+  # Before the interpreter hunt, deliberately: --mode has to be answerable on a
+  # machine with no PowerShell on it at all, and the declaration lives in the
+  # .ps1 file rather than in whatever runs it.
+  STEP_FILE="$script"
+  [ "$MODE_QUERY" = "1" ] && return 0
   for sh in pwsh powershell.exe powershell; do
     command -v "$sh" >/dev/null 2>&1 || continue
     CMD=(env NO_COLOR=1 TERM=dumb "$sh" -NoProfile -NonInteractive -Command "
@@ -112,6 +136,11 @@ ps_step() {
 # --- pick the command (validate the step BEFORE any side effect) -------------
 # Every step is an argv array. Keep them one line each so the table stays a
 # readable index of what this branch can do.
+#
+# STEP_FILE is the script whose header declares the step's mode. It defaults to
+# CMD[0], which is right for every ordinary step; set it explicitly in an arm
+# whose CMD[0] is an interpreter rather than the step itself.
+STEP_FILE=""
 case "$STEP" in
   env)  CMD=(./steps/env-snapshot.sh) ;;
   net)  CMD=(./steps/net-probe.sh) ;;
@@ -121,7 +150,7 @@ case "$STEP" in
   # -- add task steps here (task branches only) -----------------------------
   # tfplan)  CMD=(./steps/tf-plan.sh) ;;
   # winev)   ps_step ./steps/win-events.ps1 ;;
-  # deploy)  CMD=(./steps/deploy.sh) ;;      # ACTION - never the default step
+  # deploy)  CMD=(./steps/deploy.sh) ;;      # declares 'action' - never the default step
 
   *)
     echo "unknown step: $STEP" >&2
@@ -129,16 +158,60 @@ case "$STEP" in
     exit 2 ;;
 esac
 
-# --- destructive steps must opt in ------------------------------------------
-# Add a step name here when it changes state. The operator then has to type
-# CONFIRM=yes, so a stale DEFAULT_STEP can never silently destroy anything.
-case "$STEP" in
-  reset|destroy|apply|deploy)
+# --- a step declares what it is, and an undeclared step does not run ----------
+# This gate used to be a list of step NAMES - `reset|destroy|apply|deploy`. The
+# hole in that was not subtle: `cleanup-disk` matches none of them and was waved
+# through as a diagnostic, while a read-only step that happened to be called
+# `deploy` was gated for its spelling. A filename is not evidence about
+# behaviour.
+#
+# So every step file carries, in its first 30 lines:
+#
+#     # heliograph-mode: read-only        (or: action)
+#
+# and the runner reads it from the file it is about to execute. Missing or
+# unrecognised REFUSES - fail closed, because the alternative is inferring
+# authority from a step that never claimed any.
+#
+# What this does NOT do, and the documentation says so too: stop an author
+# declaring read-only and then writing `rm -rf`. Nothing in a shell runner can.
+# It makes the classification an explicit statement in the file being run,
+# checked at the boundary, instead of a guess made from its name.
+STEP_FILE="${STEP_FILE:-${CMD[0]-}}"
+MODE="$(sed -n '1,30{s/^#[[:space:]]*heliograph-mode:[[:space:]]*\([A-Za-z-]*\).*/\1/p;}' "$STEP_FILE" 2>/dev/null | head -1)"
+
+if [ "$MODE_QUERY" = "1" ]; then
+  case "$QUERY" in
+    mode) printf '%s\n' "${MODE:-undeclared}" ;;
+    file) printf '%s\n' "$STEP_FILE" ;;
+  esac
+  case "$MODE" in read-only|action) exit 0 ;; *) exit 3 ;; esac
+fi
+
+case "$MODE" in
+  read-only) ;;
+  action)
     if [ "${CONFIRM:-}" != "yes" ]; then
-      echo "step '$STEP' changes state. Re-run with: CONFIRM=yes ./run.sh $STEP" >&2
+      echo "step '$STEP' declares 'heliograph-mode: action' - it changes state." >&2
+      echo "Re-run with: CONFIRM=yes ./run.sh $STEP" >&2
       exit 3
     fi ;;
+  "")
+    echo "step '$STEP' ($STEP_FILE) declares no mode, so it will not run." >&2
+    echo "Add one of these to the file, in its first 30 lines:" >&2
+    echo "    # heliograph-mode: read-only     # measures, changes nothing" >&2
+    echo "    # heliograph-mode: action        # changes state; needs CONFIRM=yes" >&2
+    exit 3 ;;
+  *)
+    echo "step '$STEP' ($STEP_FILE) declares 'heliograph-mode: $MODE', which is not a mode." >&2
+    echo "The two accepted values are 'read-only' and 'action'. Nothing else is guessed at." >&2
+    exit 3 ;;
 esac
+
+# The account is the blast radius, so it is checked before anything is captured
+# and after the step has been validated - an unknown step should still say it is
+# unknown, whoever is asking.
+cap_refuse_root || exit 5
 
 OUT_DIR="${LOG_DIR:-$REPO_ROOT/ops-logs}"
 mkdir -p "$OUT_DIR"

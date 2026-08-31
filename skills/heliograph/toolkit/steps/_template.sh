@@ -2,6 +2,8 @@
 # =============================================================================
 #  steps/_template.sh - copy this to start a new step
 # =============================================================================
+# heliograph-mode: read-only     # the runner refuses a step that declares nothing.
+#                                # Use `action` for a step that changes state.
 #   cp steps/_template.sh steps/my-step.sh && chmod +x steps/my-step.sh
 #   then add   my-step)  CMD=(./steps/my-step.sh) ;;   to run.sh
 #   and list it in the step table comment at the top of run.sh

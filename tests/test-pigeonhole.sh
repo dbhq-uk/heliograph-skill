@@ -80,6 +80,7 @@ make_repo() {
   chmod +x "$repo/pigeonhole.sh" "$repo/run.sh"
   cat > "$repo/steps/echo-env.sh" <<'STEP'
 #!/usr/bin/env bash
+# heliograph-mode: read-only
 set -uo pipefail
 echo "HOSTS=[${HOSTS:-}]"
 echo "PORTS=[${PORTS:-}]"
@@ -206,9 +207,16 @@ assert_contains "and reports the exit code" "exit:     0" \
 # =============================================================================
 STORE="$TMP/s2"; REPO="$TMP/r2"; BIN="$TMP/b2"
 mkdir -p "$STORE"; make_fake_curl "$BIN" "$STORE"; make_repo "$REPO"
+# CONFIRM=yes in the env line is itself an action marker now - it exists to
+# authorise a state-changing step and nothing else - so this request would be
+# refused by a read-only runner. The quoting property under test is unrelated to
+# the gate, so the runner is started opted-in rather than the case being
+# rewritten to avoid the variable it is really about.
+export PIGEONHOLE_ALLOW_ACTIONS=1
 run_agent_then_send "$REPO" "$STORE" "$BIN" default \
   "id: quoted" "step: echo-env" \
   'env: HOSTS="alpha beta" PORTS="443 1433" CONFIRM=yes' "cancel:" "stop:"
+unset PIGEONHOLE_ALLOW_ACTIONS
 
 log="$(cat "$STORE/logs/"echo-env-*.txt 2>/dev/null)"
 assert_contains "a quoted value with a space survives whole" "HOSTS=[alpha beta]" "$log"
@@ -292,5 +300,53 @@ assert_contains "it announces itself before any work arrives" "lane:     default
   "$(cat "$STORE/status/default.txt" 2>/dev/null)"
 assert_contains "and a signalled agent records why it stopped" "reason:   SIGTERM" \
   "$(cat "$STORE/status/default.txt" 2>/dev/null)"
+
+# =============================================================================
+#  It is read-only unless the operator said otherwise
+# =============================================================================
+# The same posture as agent.sh, asserted separately because this is a different
+# runner reached by a different transport - and a container template that turned
+# out to be the permissive one would undo the whole argument.
+#
+# The gate reads the step's own declaration through run.sh --mode. The prefix
+# convention it replaced (apply-*, deploy-*, ...) could only see the steps whose
+# authors had followed it.
+STORE="$TMP/s6"; REPO="$TMP/r6"; BIN="$TMP/b6"
+mkdir -p "$STORE"; make_fake_curl "$BIN" "$STORE"; make_repo "$REPO"
+cat > "$REPO/steps/writer.sh" <<'STEP'
+#!/usr/bin/env bash
+# heliograph-mode: action
+echo "this one changes something"
+STEP
+chmod +x "$REPO/steps/writer.sh"
+sed -i 's|^  echo-env) CMD=(./steps/echo-env.sh) ;;|  echo-env) CMD=(./steps/echo-env.sh) ;;\n  writer) CMD=(./steps/writer.sh) ;;|' "$REPO/run.sh"
+
+run_agent_then_send "$REPO" "$STORE" "$BIN" default "id: a1" "step: writer" "env: CONFIRM=yes"
+assert_contains "an action step is refused by default" "state:    refused" \
+  "$(cat "$STORE/status/default.txt" 2>/dev/null)"
+assert_contains "and the reason names the variable that would permit it" \
+  "PIGEONHOLE_ALLOW_ACTIONS=1" "$(cat "$STORE/status/default.txt" 2>/dev/null)"
+assert_eq "and nothing was captured" "0" "$(count_matching "$STORE/logs" 'writer-*.txt')"
+
+STORE="$TMP/s7"; REPO="$TMP/r7"; BIN="$TMP/b7"
+mkdir -p "$STORE"; make_fake_curl "$BIN" "$STORE"; make_repo "$REPO"
+cp "$TMP/r6/steps/writer.sh" "$REPO/steps/writer.sh"
+sed -i 's|^  echo-env) CMD=(./steps/echo-env.sh) ;;|  echo-env) CMD=(./steps/echo-env.sh) ;;\n  writer) CMD=(./steps/writer.sh) ;;|' "$REPO/run.sh"
+( cd "$REPO" && timeout 20 env PATH="$BIN:$PATH" FAKE_STORE="$STORE" \
+    PIGEONHOLE_ACCOUNT=testacct PIGEONHOLE_SAS='sv=2021&sig=abc' \
+    PIGEONHOLE_ALLOW_ACTIONS=1 PIGEONHOLE_ONCE=1 PIGEONHOLE_POLL=1 \
+    ./pigeonhole.sh >"$STORE/.console" 2>&1 ) &
+agent_pid=$!
+waited=0
+while ! grep -q "no request at" "$STORE/.console" 2>/dev/null; do
+  [ "$waited" -ge 200 ] && break
+  sleep 0.1; waited=$((waited + 1))
+done
+write_request "$STORE" default "id: a2" "step: writer" "env: CONFIRM=yes"
+wait "$agent_pid" 2>/dev/null
+assert_contains "the banner says which posture it started in" "actions : allowed" \
+  "$(cat "$STORE/.console")"
+assert_eq "and with the opt-in the same step runs" "1" \
+  "$(count_matching "$STORE/logs" 'writer-*.txt')"
 
 t_summary "test-pigeonhole.sh"

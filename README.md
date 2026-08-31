@@ -56,6 +56,13 @@ agent, which watches the branch, runs what you ask for, and pushes the log back.
 After that the loop is git in both directions, and nobody has to be sitting on the
 far side.
 
+That loop is **read-only unless the operator said otherwise.** Every step
+declares itself (`# heliograph-mode: read-only` or `action`) in its own file, one
+that declares neither does not run, and the unattended agent refuses an action
+unless it was started with `--allow-actions`. It will not run as root either: the
+account is the whole blast radius, because this toolkit holds no credentials of
+its own. [`SECURITY.md`](SECURITY.md) is honest about where that stops.
+
 ## Two properties that make a log-only loop workable
 
 **Every line carries a UTC timestamp**, so a hang shows up as a *gap*. After the
@@ -178,10 +185,12 @@ about the publishing side of this.
 committing it is how a run escapes a machine nobody can reach.
 
 Because logs are committed and pushed, anything a command prints is in git
-history permanently. `cap_redact` masks the obvious shapes (`password=`,
-`Bearer`, `Basic`, a credential carried in a URL, private keys) on the way out.
-**It is a safety net, not a guarantee.** Do not run things that print secrets,
-and keep the transport repo private.
+history permanently. `cap_redact` masks two kinds of shape on the way out: by
+position (`password=`, an `Authorization:` header with any scheme, a credential
+carried in a URL, private keys) and by the prefixes vendors publish so that
+scanners can spot them (`ghp_`, `github_pat_`, `AKIA`, `xox`, `glpat-`, `sk-`,
+JWTs). **It is a safety net, not a guarantee.** Do not run things that print
+secrets, and keep the transport repo private.
 
 Occasionally a value has to travel the other way: something the far side needs
 and cannot fetch for itself. `secret.sh` carries it as ciphertext, with the

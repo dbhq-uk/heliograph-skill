@@ -79,6 +79,10 @@ Thumbs.db
 # --- agent state (local to each control node, never shared) ------------------
 .agent.lock
 .agent-state
+# The step hashes `./agent.sh --pin` approved. LOCAL on purpose: an approval
+# recorded in this repo could be edited from the far side, which is the only
+# side a pin exists to distrust.
+.agent-approved
 # service.sh's runtime state when it falls back to setsid + nohup.
 .agent-service.pid
 .agent-service.log

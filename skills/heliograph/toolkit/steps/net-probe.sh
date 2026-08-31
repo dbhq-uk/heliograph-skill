@@ -2,6 +2,7 @@
 # =============================================================================
 #  steps/net-probe.sh - can this box reach those boxes, on those ports?
 # =============================================================================
+# heliograph-mode: read-only
 # Resolve, ping, then TCP-connect every host against every port, one line each,
 # in a table you can diff between runs.
 #
