@@ -66,23 +66,35 @@ appending through an open descriptor, which is also why those pushes never pull
 or rebase - a rewrite underneath a running step would leave the appends
 continuing at a stale offset. `cap_push` remains the authoritative final push.
 
-**4. Read-only until earned, and gated per request.** A step that changes state
-is listed in `run.sh`'s `CONFIRM=yes` gate, so a stale `DEFAULT_STEP` can never
-do damage on its own, and `agent.sh` recognises one by name (`ACTION_STEPS`) and
-by the env the request passes (`ACTION_ENV`) - the second because a diagnostic
-step that only writes once `env: APPLY=1` is set would otherwise sail through.
-Both gates, deliberately: an unattended loop that can apply infrastructure
-because a file changed is a different proposition from one that only reads.
+**4. Read-only until earned, and every gate fails closed.** A step says what it
+is in its own file - `# heliograph-mode: read-only` or `action`, in the first 30
+lines - and a step that declares neither **does not run at all**. `run.sh` reads
+that declaration and requires `CONFIRM=yes` for an action, so a stale
+`DEFAULT_STEP` can never do damage on its own. `agent.sh` asks the same question
+through `run.sh --mode` and refuses an action unless started with
+`--allow-actions`; it also still checks the env the request passes
+(`ACTION_ENV`), because a diagnostic that only writes once `env: APPLY=1` is set
+is invisible to any declaration.
 
-`ALLOW_ACTIONS` defaults to **1**, and that is a considered position rather than
-a relaxation. It was a flag typed once at agent start, often days before the
-request it gated, so forgetting it surfaced as a silent `refused` long after the
-request was pushed - a wasted round trip, which is the thing this repo exists to
-prevent. The gates that actually stand between a request and a change are the
-per-request ones, and they are unchanged. `--no-actions` (or `ALLOW_ACTIONS=0`)
-still refuses outright, for a loop that must never write.
+When you add a step, declare it. When you review one, check the declaration
+matches what the step actually does - that is the one part of this a machine
+cannot verify.
+
+`ALLOW_ACTIONS` defaults to **0**. It was 1 for a while for a real reason: the
+flag is typed once at agent start, often days before the request it gates, and a
+forgotten one surfaced as a *silent* `refused` long after the push - a wasted
+round trip, which is the thing this repo exists to prevent. That argument was
+retired by `publish_status "refused"`: the refusal now reaches the far side, with
+the flag that would permit it, within one poll. An unattended loop that can apply
+infrastructure because a file changed is not a default this repo should ship.
 
 Never make a state-changing step the default.
+
+**4a. The account is the blast radius.** This toolkit holds no credentials, so
+"what could this do" is answered by the account it runs as. Every runner refuses
+to run as root unless `ALLOW_ROOT=1`. Do not add a code path that escalates by
+default, and do not soften that refusal into a warning: a warning in a captured
+log is read after the run.
 
 **5. The transport repo is private, and separate.** Captured logs are committed
 to it. `cap_redact` masks the obvious shapes and is a safety net, not a

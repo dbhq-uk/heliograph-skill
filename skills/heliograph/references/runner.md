@@ -74,10 +74,12 @@ run where installing is forbidden.
 ## `agent.sh` - the unattended loop
 
 ```bash
-./agent.sh                     # poll, run, push, repeat
-./agent.sh --no-actions        # refuse any step that changes state
+./agent.sh                     # poll, run, push, repeat - READ-ONLY
+./agent.sh --allow-actions     # also run steps that declare themselves actions
 ./agent.sh --once              # one requested run, then exit
 ./agent.sh --interval 15       # seconds between polls (default 5)
+./agent.sh --allow-root        # permit running as root (it refuses by default)
+./agent.sh --pin               # approve the current steps, for REQUIRE_PIN=1
 ```
 
 Start it once on the control node and leave it. It polls this branch, and when the `id:` in
@@ -177,24 +179,52 @@ started:  finished:  exit:  log:      (on completion)
 
 ### Safety
 
-A step that changes state is recognised two ways: by **name** (`ACTION_STEPS` - `apply deploy
-destroy reset` by default) and by **env** (`ACTION_ENV` - anything matching `APPLY=1`, `CONFIRM=yes`,
-`DESTROY=1`, `FORCE=1`, `WRITE=1` in the request's `env:` line). The name-only version had a hole: a
-step named for a diagnostic that only writes once `env: APPLY=1` is passed sailed straight through.
+**This loop is read-only unless you started it otherwise.** `ALLOW_ACTIONS` defaults to `0`.
 
-Such a step still has to carry `env: CONFIRM=yes`, and `run.sh` gates it again on its own. **Both
-gates, deliberately**, and neither has anything to do with how the agent was started.
+A step that changes state is recognised two ways: by **its own declaration** (`# heliograph-mode:
+action` in the step file, read through `run.sh --mode`) and by **env** (`ACTION_ENV` - anything
+matching `APPLY=1`, `CONFIRM=yes`, `DESTROY=1`, `FORCE=1`, `WRITE=1` in the request's `env:` line).
+The second exists because a declaration cannot see the first: a step that plans is read-only until
+`env: APPLY=1` makes it apply.
 
-`ALLOW_ACTIONS` decides whether this agent will run one at all. **It defaults to 1**, because it was
-a flag typed once at agent start, often days before the request it gated: forgetting it surfaced as
-a silent `refused` long after the request was pushed, which wastes the round trip this tooling
-exists to save. Start with `--no-actions` (or `ALLOW_ACTIONS=0`) for a loop that must never write:
-the request is then **refused**, recorded in `agent/status`, and not retried.
+A step that declares nothing is refused outright, by `run.sh` and by the agent before it. Fail
+closed: the alternative is inferring authority from a step that never claimed any.
 
-Making it the default is a real change in posture, so be plain about what still holds. `apply`,
-`destroy` and friends will not run because a file changed: they need `CONFIRM=yes` in the request
-**and** `run.sh`'s gate **and** whatever mode check the step itself has. What the default removes is
-a fourth gate that could only be set at a moment when nobody knew yet what would be asked for.
+An action the agent is willing to run still has to carry `env: CONFIRM=yes`, and `run.sh` gates it
+again on its own. **Both gates, deliberately.**
+
+This default was `1` for a while, and the reason was real: the flag is typed once at agent start,
+often days before the request it gates, and forgetting it surfaced as a *silent* `refused` long
+after the push - wasting the round trip this tooling exists to save. What retired that argument was
+`publish_status "refused"`. The refusal now reaches the far side, with its reason and the flag that
+would permit it, within one poll. The cost of a safe default fell from a wasted day to a few
+seconds.
+
+**It will not run as root.** The account is the whole blast radius - this toolkit holds no
+credentials of its own - and root makes that radius the machine. Checked at startup, not per
+request, so a loop that would refuse everything says so before the operator walks away.
+`--allow-root` (or `ALLOW_ROOT=1`) is there for an image with no other user.
+
+### Pinning: an allowlist, when you want one
+
+`REQUIRE_PIN=1 ./agent.sh` runs only files whose sha256 the operator approved:
+
+```bash
+./agent.sh --pin                  # approve run.sh, caplib.sh, lib/*.sh and steps/*
+REQUIRE_PIN=1 ./agent.sh          # and refuse anything else
+```
+
+Approvals live in `.agent-approved`, which is **gitignored on purpose**: recorded in the transport
+repo they could be edited from the far side, which is the only side a pin exists to distrust.
+Hashing rather than listing names is the point - an edit to an approved step is a different step,
+and the pin notices.
+
+`--pin` takes no lock, so it can be run while the loop is up. That is when it is wanted.
+
+**Off by default**, because it makes every new step wait for the operator, which is the relaying
+this loop exists to remove. It is for an estate that wants "runs only what I approved" and knows
+what that costs. It covers everything a request can reach; it does not cover `agent.sh` itself,
+which self-updates on pull.
 
 ### Operational notes
 
@@ -221,6 +251,8 @@ a fourth gate that could only be set at a moment when nobody knew yet what would
 git pull && ./run.sh              # the current step (DEFAULT_STEP)
 ./run.sh <step>                   # a specific one
 ./run.sh --list                   # what this branch can do
+./run.sh --mode <step>            # what that step declares itself to be
+./run.sh --file <step>            # which file that declaration came from
 ```
 
 The operator's whole interface. You set `DEFAULT_STEP` near the top of the file and push;
@@ -231,9 +263,31 @@ Anatomy, in order:
 1. `--list` prints the step-table comment - so keeping that comment current is not optional.
 2. The `case` table maps a step name to an argv array, and **validates the step before any
    side effect**. An unknown step exits 2 having done nothing.
-3. A second `case` gates state-changing steps behind `CONFIRM=yes`, so a stale `DEFAULT_STEP`
-   can't destroy anything on its own.
-4. `cap_header` → `cap_run` → `cap_footer` → `cap_push`.
+3. The step's own file is read for `# heliograph-mode:`. `read-only` runs; `action` needs
+   `CONFIRM=yes`; anything else, including nothing at all, exits 3 having done nothing.
+4. It refuses to run as root (exit 5) unless `ALLOW_ROOT=1`.
+5. `cap_header` → `cap_run` → `cap_footer` → `cap_push`.
+
+`--mode` and `--file` answer questions about a step and exit without touching anything. `agent.sh`
+asks through them rather than parsing the step table itself, so the mapping from a name to a file
+has one owner.
+
+#### Declaring a step
+
+Every step file carries this in its first 30 lines, and one that does not will not run:
+
+```bash
+# heliograph-mode: read-only     # measures, changes nothing
+# heliograph-mode: action        # changes state; needs CONFIRM=yes
+```
+
+Both templates in `steps/` already have it. The gate used to be a list of step *names* -
+`apply|deploy|destroy|reset` - and the hole was not subtle: `cleanup-disk` matched none of them and
+ran as a diagnostic, while a read-only step called `deploy` was gated for its spelling.
+
+A declaration is a statement by the step's author, checked at the boundary. It does not stop an
+author declaring `read-only` and then writing `rm -rf`; nothing in a shell runner can. It makes the
+classification explicit and machine-checked instead of guessed from a filename.
 
 Log: `ops-logs/<step>-<UTC>.txt`. Exit code is the step's real exit code.
 
@@ -263,7 +317,10 @@ chain or gate on.
 |---|---|---|
 | `PUSH` | `1` | `PUSH=0` captures to `ops-logs/` but does **not** commit/push |
 | `SUDO` | `0` | `SUDO=1` pre-caches sudo up front, with a 60s keep-alive. Use for anything that escalates on the control node - otherwise it hangs on an invisible password prompt |
-| `CONFIRM` | unset | required (`CONFIRM=yes`) for gated state-changing steps in `run.sh` |
+| `CONFIRM` | unset | required (`CONFIRM=yes`) for a step declaring `heliograph-mode: action` |
+| `ALLOW_ROOT` | `0` | `1` permits running as root. Every runner refuses by default |
+| `ALLOW_ACTIONS` | `0` | `1` (or `--allow-actions`) lets `agent.sh` run an action step at all |
+| `REQUIRE_PIN` | `0` | `1` makes `agent.sh` run only files approved by `./agent.sh --pin` |
 | `REDACT` | `1` | `REDACT=0` disables secret masking, when it's hiding something you need |
 | `LOG_DIR` | `ops-logs/` | where the log is written |
 | `PROGRESS_EVERY` | `60` | seconds between partial-log pushes while a step runs (`agent.sh`; `0` disables) |

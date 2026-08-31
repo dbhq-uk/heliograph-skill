@@ -141,9 +141,13 @@ The trigger is the **`id`**, not a new commit: docs and step edits land
 constantly and would otherwise fire runs nobody asked for. `stop: yes` ends the
 agent from your side, which matters because nobody is sitting at that terminal.
 
-State-changing steps need `CONFIRM=yes` in the request's `env:` **and** pass
-`run.sh`'s own gate. Both, deliberately. The agent will run one unless it was
-started with `--no-actions`.
+Every step declares itself in its own file - `# heliograph-mode: read-only` or
+`action` - and a step that declares neither will not run. A state-changing step
+needs `CONFIRM=yes` in the request's `env:` **and** `run.sh`'s own gate, and the
+agent refuses it altogether unless the operator started it with
+`--allow-actions`. The loop is read-only by default; a refusal is published to
+`agent/status` within seconds, so you find out on the next poll rather than after
+a wasted round trip.
 
 `cancel: yes` kills the step running right now, and `cancel: <id>` kills it only
 if that id is the one running. The agent stays responsive while a step runs, so a
