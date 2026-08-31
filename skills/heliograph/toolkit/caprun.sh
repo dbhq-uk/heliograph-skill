@@ -41,6 +41,8 @@ USAGE
   exit 2
 fi
 
+cap_refuse_root || exit 5
+
 LABEL="$(printf '%s' "$1" | tr -c 'A-Za-z0-9_.-' '-')"; shift
 [ "${1:-}" = "--" ] && shift
 if [ "$#" -lt 1 ]; then echo "$0: no command given after label" >&2; exit 2; fi

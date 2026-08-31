@@ -224,6 +224,18 @@ preflight() {
     report warn setsid "absent, so agent.sh falls back to 'set -m' job control"
   fi
 
+  # Asked here as well as in the runners, because this file exists to answer
+  # "will this work on this machine" before anyone commits to it. Finding out at
+  # handover that the loop refuses to start is the same wasted trip the preflight
+  # is for.
+  if [ "$(id -u 2>/dev/null || echo 1000)" != "0" ]; then
+    report ok user "$(whoami 2>/dev/null || echo unknown) - not root, so the blast radius is this account"
+  elif [ "${ALLOW_ROOT:-0}" = "1" ]; then
+    report warn user "root, permitted by ALLOW_ROOT=1. Every step will run with the whole machine in reach"
+  else
+    report FAIL user "root, and the runners refuse that: this toolkit has no credentials of its own, so the account it runs as is the whole blast radius. Run as an unprivileged user, or set ALLOW_ROOT=1 if this image has no other"
+  fi
+
   local br
   br="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
   if [ -n "$br" ] && [ "$br" != "HEAD" ]; then

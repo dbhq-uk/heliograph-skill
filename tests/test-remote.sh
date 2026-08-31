@@ -44,6 +44,7 @@ bash "$REPO/skills/heliograph/scripts/bootstrap.sh" "$TR" >/dev/null 2>&1
 
 cat > "$TR/steps/crlf.sh" <<'EOF'
 #!/usr/bin/env bash
+# heliograph-mode: read-only
 printf 'windows line one\r\n'
 printf 'windows line two\r\n'
 printf 'midline\rprogress on one line\n'

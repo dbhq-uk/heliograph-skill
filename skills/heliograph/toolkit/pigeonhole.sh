@@ -40,8 +40,12 @@
 #    PIGEONHOLE_POLL      seconds between polls. Default: 10
 #    PIGEONHOLE_PROGRESS  seconds between partial-log uploads. Default: 60
 #    PIGEONHOLE_ONCE      set to 1 to answer one request and exit
+#    PIGEONHOLE_ALLOW_ACTIONS
+#                         set to 1 to permit steps that declare themselves
+#                         actions. Default 0: this runner is read-only unless
+#                         the operator says otherwise when starting it.
 #    PIGEONHOLE_NO_ACTIONS
-#                         set to 1 to refuse any step that changes state
+#                         the old spelling of the default. Still honoured.
 #
 #  It expects four containers on the account: requests, logs, status and agent.
 #
@@ -236,16 +240,32 @@ trap 'cleanup_and_exit 143 TERM' TERM
 trap 'cleanup_and_exit 130 INT' INT
 
 # --- action gate -------------------------------------------------------------
-# Same rule as agent.sh: a step that changes state runs only when the request
-# asks for it explicitly AND run.sh's own gate agrees. Both, deliberately. The
-# name convention is the first half of that and is checked here so a runner
-# started with PIGEONHOLE_NO_ACTIONS can refuse before anything is captured.
+# Same rule as agent.sh, and for the same reason: this runner is unattended, so
+# it is READ-ONLY unless the operator said otherwise when starting it.
+#
+# The step's own file says what it is (`# heliograph-mode: action`), read
+# through run.sh --mode so the step table has one owner. The prefix convention
+# this replaced - apply-*, deploy-*, fix-*, restart-* - could only ever see the
+# steps whose authors happened to follow it.
+#
+# PIGEONHOLE_NO_ACTIONS=1 is kept, and is now the default. It stays because it
+# is in the shipped container and pipeline templates, and a runner that starts
+# refusing to start over a variable it used to accept helps nobody.
+ACTION_ENV="${ACTION_ENV:-APPLY=1 CONFIRM=yes DESTROY=1 FORCE=1 WRITE=1}"
+ALLOW_ACTIONS="${PIGEONHOLE_ALLOW_ACTIONS:-0}"
+[ "${PIGEONHOLE_NO_ACTIONS:-0}" = "1" ] && ALLOW_ACTIONS=0
 is_action_step() {
-  case "$1" in
-    apply-*|deploy-*|fix-*|restart-*|rotate-*|write-*) return 0 ;;
-    *) return 1 ;;
-  esac
+  local a
+  [ "$("$HERE/run.sh" --mode "$1" 2>/dev/null | head -1)" = "action" ] && return 0
+  for a in $ACTION_ENV; do
+    case "${ENV_EXTRA:-}" in *"$a"*) return 0 ;; esac
+  done
+  return 1
 }
+
+# The account this runs as is the whole blast radius - see caplib.sh - and an
+# unattended runner in a container is the last place to discover that late.
+cap_refuse_root || exit 5
 
 # =============================================================================
 #  Main loop
@@ -254,7 +274,7 @@ say "pigeonhole starting"
 say "  account : ${ACCOUNT}"
 say "  lane    : ${LANE}   (requests/${LANE}.txt)"
 say "  poll    : ${POLL}s"
-say "  actions : $([ "${PIGEONHOLE_NO_ACTIONS:-0}" = "1" ] && echo refused || echo allowed)"
+say "  actions : $([ "$ALLOW_ACTIONS" = "1" ] && echo allowed || echo 'refused (the default)')"
 
 # Proves the SAS and the network before anything depends on them, and leaves a
 # record that this runner is alive even if no request ever arrives.
@@ -310,11 +330,19 @@ while :; do
       STEP="${STEP:-}"
       say "request ${ID}: step '${STEP:-<default>}'"
 
-      if [ -n "$STEP" ] && is_action_step "$STEP" && [ "${PIGEONHOLE_NO_ACTIONS:-0}" = "1" ]; then
-        say "refusing '${STEP}': this runner was started with PIGEONHOLE_NO_ACTIONS=1"
-        publish_status "refused" "$ID" "$STEP" "reason:   PIGEONHOLE_NO_ACTIONS=1"
+      if [ -n "$STEP" ] && is_action_step "$STEP" && [ "$ALLOW_ACTIONS" != "1" ]; then
+        say "refusing '${STEP}': it changes state and this runner is read-only (the default)"
+        publish_status "refused" "$ID" "$STEP" "reason:   step changes state; restart with PIGEONHOLE_ALLOW_ACTIONS=1 to permit it"
         LAST_ID="$ID"
-        rm -f "$REQ_FILE"; sleep "$POLL"; continue
+        rm -f "$REQ_FILE"
+        # A refusal is an answer, as below: a --once runner that has published
+        # one has done its job and must not sit polling over a question it has
+        # already responded to.
+        if [ "${PIGEONHOLE_ONCE:-0}" = "1" ]; then
+          say "PIGEONHOLE_ONCE=1 - request refused, exiting"
+          exit 0
+        fi
+        sleep "$POLL"; continue
       fi
 
       # A fresh directory per run, so the log this run produced is the only

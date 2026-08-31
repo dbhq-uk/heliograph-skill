@@ -2,6 +2,7 @@
 # =============================================================================
 #  steps/tools-inventory.sh - what can this runner actually do?
 # =============================================================================
+# heliograph-mode: read-only
 #  Read-only. Answers one question: what can this host actually do?
 #
 #  WHY THIS EXISTS SEPARATELY FROM `env`. The env step checks a fixed list of
