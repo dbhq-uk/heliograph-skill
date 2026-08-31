@@ -181,7 +181,7 @@ jobs:
       - name: A failing step still produces a log and the real exit code
         run: |
           cd /tmp/transport
-          printf '#!/usr/bin/env bash\nset -uo pipefail\necho "this step fails"\nexit 7\n' > steps/boom.sh
+          printf '#!/usr/bin/env bash\n# heliograph-mode: read-only\nset -uo pipefail\necho "this step fails"\nexit 7\n' > steps/boom.sh
           chmod +x steps/boom.sh
           sed -i 's|^  net)|  boom) CMD=(./steps/boom.sh) ;;\n  net)|' run.sh
           set +e; PUSH=0 ./run.sh boom; rc=$?; set -e
@@ -198,12 +198,43 @@ jobs:
           [ "$rc" = "2" ] || { echo "expected exit 2, got $rc"; exit 1; }
           [ "$(ls ops-logs | wc -l)" = "$before" ] || { echo "an unknown step wrote a log"; exit 1; }
 
-      - name: A gated step refuses without CONFIRM
+      # A step says what it is in its own file, and the runner gates on that
+      # rather than on the step's name. Both halves are exercised here because
+      # both are refusals, and a refusal that silently stopped happening would
+      # look exactly like a clean run.
+      - name: A step declaring itself an action refuses without CONFIRM
         run: |
           cd /tmp/transport
-          sed -i 's|^  boom)|  apply) CMD=(./steps/boom.sh) ;;\n  boom)|' run.sh
+          printf '#!/usr/bin/env bash\n# heliograph-mode: action\necho "changes something"\n' > steps/act.sh
+          chmod +x steps/act.sh
+          sed -i 's|^  boom)|  apply) CMD=(./steps/act.sh) ;;\n  boom)|' run.sh
           set +e; PUSH=0 ./run.sh apply >/dev/null 2>&1; rc=$?; set -e
           [ "$rc" = "3" ] || { echo "a state-changing step ran without CONFIRM=yes (exit $rc)"; exit 1; }
+          set +e; CONFIRM=yes PUSH=0 ./run.sh apply >/dev/null 2>&1; rc=$?; set -e
+          [ "$rc" = "0" ] || { echo "CONFIRM=yes did not let the action through (exit $rc)"; exit 1; }
+
+      - name: A step that declares nothing does not run at all
+        run: |
+          cd /tmp/transport
+          printf '#!/usr/bin/env bash\necho "no declaration here"\n' > steps/undeclared.sh
+          chmod +x steps/undeclared.sh
+          sed -i 's|^  boom)|  undeclared) CMD=(./steps/undeclared.sh) ;;\n  boom)|' run.sh
+          before=$(ls ops-logs | wc -l)
+          set +e; out=$(PUSH=0 ./run.sh undeclared 2>&1); rc=$?; set -e
+          [ "$rc" = "3" ] || { echo "an undeclared step was not refused (exit $rc)"; exit 1; }
+          [ "$(ls ops-logs | wc -l)" = "$before" ] || { echo "an undeclared step wrote a log"; exit 1; }
+          case "$out" in *heliograph-mode:*) ;; *) echo "the refusal did not say what to add"; exit 1 ;; esac
+
+      - name: The runner refuses to run as root
+        run: |
+          cd /tmp/transport
+          mkdir -p /tmp/fakebin
+          printf '#!/bin/sh\n[ "$1" = "-u" ] && { echo 0; exit 0; }\nexec /usr/bin/id "$@"\n' > /tmp/fakebin/id
+          chmod +x /tmp/fakebin/id
+          set +e; PATH=/tmp/fakebin:$PATH PUSH=0 ./run.sh env >/dev/null 2>&1; rc=$?; set -e
+          [ "$rc" = "5" ] || { echo "expected the root refusal (exit 5), got $rc"; exit 1; }
+          set +e; PATH=/tmp/fakebin:$PATH ALLOW_ROOT=1 PUSH=0 ./run.sh env >/dev/null 2>&1; rc=$?; set -e
+          [ "$rc" = "0" ] || { echo "ALLOW_ROOT=1 did not permit the run (exit $rc)"; exit 1; }
 
   tests:
     name: Toolkit unit tests
