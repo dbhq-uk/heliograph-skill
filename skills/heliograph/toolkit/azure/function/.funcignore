@@ -1,0 +1,6 @@
+# The toolkit ships WITH the function; only genuine noise is excluded.
+.git*
+.vscode
+__pycache__
+.venv
+ops-logs/*

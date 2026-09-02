@@ -349,4 +349,51 @@ assert_contains "the banner says which posture it started in" "actions : allowed
 assert_eq "and with the opt-in the same step runs" "1" \
   "$(count_matching "$STORE/logs" 'writer-*.txt')"
 
+# =============================================================================
+#  Resuming from the drop, for a runner with no memory between runs
+# =============================================================================
+# A Function App invocation is not a loop. Every run starts fresh, so the
+# in-memory LAST_ID that stops a restart re-running the last step is gone -
+# and the startup rule that absorbs whatever id is present would mean such a
+# runner NEVER runs anything at all.
+#
+# PIGEONHOLE_RESUME=1 reads the last answered id from the status blob instead.
+# The two properties below are the whole of it, and they pull in opposite
+# directions: answer an id nobody has answered, and refuse one somebody has.
+
+# --- an unanswered id runs, even though it was there before the agent started
+STORE="$TMP/s6"; REPO="$TMP/r6"; BIN="$TMP/b6"
+mkdir -p "$STORE"; make_fake_curl "$BIN" "$STORE"; make_repo "$REPO"
+write_request "$STORE" default "id: never-answered" "step: echo-env" "env:" "cancel:" "stop:"
+run_agent "$REPO" "$STORE" "$BIN" PIGEONHOLE_RESUME=1
+
+assert_eq "resume runs an id the status blob has never recorded" "1" \
+  "$(count_matching "$STORE/logs" 'echo-env-*.txt')"
+assert_contains "and the status records which id it answered" "id:       never-answered" \
+  "$(cat "$STORE/status/default.txt" 2>/dev/null)"
+
+# --- an id the status blob already records is NOT run again
+# This is the property that stops a five-minute timer re-running the same step
+# twelve times an hour, which is the failure this mode exists to prevent.
+STORE="$TMP/s7"; REPO="$TMP/r7"; BIN="$TMP/b7"
+mkdir -p "$STORE/status"; make_fake_curl "$BIN" "$STORE"; make_repo "$REPO"
+write_request "$STORE" default "id: already-done" "step: echo-env" "env:" "cancel:" "stop:"
+printf 'state:    idle\nid:       already-done\nstep:     echo-env\nlane:     default\n' \
+  > "$STORE/status/default.txt"
+run_agent "$REPO" "$STORE" "$BIN" PIGEONHOLE_RESUME=1
+
+assert_eq "resume does not re-run an id the status blob already answered" "0" \
+  "$(count_matching "$STORE/logs" 'echo-env-*.txt')"
+
+# --- without resume, the old startup rule still holds
+# The default must not change. A long-running runner still absorbs whatever is
+# in the drop when it starts, because for it a restart IS the ambiguous case.
+STORE="$TMP/s8"; REPO="$TMP/r8"; BIN="$TMP/b8"
+mkdir -p "$STORE"; make_fake_curl "$BIN" "$STORE"; make_repo "$REPO"
+write_request "$STORE" default "id: present-at-start" "step: echo-env" "env:" "cancel:" "stop:"
+run_agent "$REPO" "$STORE" "$BIN"
+
+assert_eq "without resume, an id present at startup is still absorbed" "0" \
+  "$(count_matching "$STORE/logs" 'echo-env-*.txt')"
+
 t_summary "test-pigeonhole.sh"

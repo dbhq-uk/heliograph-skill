@@ -1,6 +1,6 @@
 # Running the agent in Azure
 
-Four places the agent can run. Each ships as bicep and as Terraform, because
+Five places the agent can run. Each ships as bicep and as Terraform, because
 estates are split on which they accept.
 
 All of them are bring-your-own. You pass in a VNet, a subnet, a plan or an
@@ -21,8 +21,76 @@ that, run the step again.
 | Web App for Containers | You can get a shell into it to debug | Built for web servers: a container with no open port gets killed and restarted every 230s unless you raise `WEBSITES_CONTAINER_START_TIME_LIMIT`. It also always has a public HTTPS endpoint - VNet integration is outbound-only |
 | Container Apps Job | Runs on a schedule, so nothing is long-lived | The published image refuses `REPO_URL` and an argument together, and a Job's whole point is passing `--once` - so the repo URL has to travel positionally instead |
 | VM (systemd, no container) | Easiest to debug: SSH in, or `az vm run-command`. No image, no registry | You own an OS and its patching. Could not be proven live in this subscription - see below |
+| Function App (Flex Consumption) | The estate will not give you anywhere to keep a process. No VM quota, no inbound path, no long-lived compute | Not a loop: a timer answers one request per tick. Needs `PIGEONHOLE_RESUME`, and there is no `git` in the image |
 
-All four were deployed for real against `rg-heliograph-test` and torn down again, except the VM, which this subscription refused to provision at all (any SKU, any region) - see "The VM host could not be deployed" below. Every other finding on this page came from watching a real deployment fail or succeed, not from documentation.
+The first four were deployed for real against `rg-heliograph-test` and torn down again, except the VM, which this subscription refused to provision at all (any SKU, any region) - see "The VM host could not be deployed" below. Every other finding on this page came from watching a real deployment fail or succeed, not from documentation.
+
+## The Function host, and the estate that forced it
+
+**Reach for this when there is nowhere to keep a process.** The other four all
+assume you can be given long-lived compute. That assumption failed completely on
+one estate in 2026-09, and the failure is worth recording because it was not
+obvious from any documentation:
+
+- **App Service quota was zero on every SKU that allocates a VM** - nine
+  checked, including classic Consumption (`Y1`), Elastic Premium (`EP1`) and
+  Isolated (`I1v2`). So the rule was not "dedicated is blocked". `FC1` was the
+  only SKU that validated.
+- **A VNet-injected Container Apps environment could not provision at all.** It
+  failed in `VirtualNetworkSetupService.ReconcileLegionConfigurationAsync`: the
+  environment has to reach Microsoft endpoints outbound to bootstrap its own
+  cluster, and the subnet had no egress. It never got as far as our containers.
+- **The container group deployed but could reach nothing**, which is the
+  original finding this transport was built for.
+
+**Measure quota with ARM preflight, not by trying to create things.**
+`az deployment group validate` against a `Microsoft.Web/serverfarms` template
+returns the quota error and creates nothing. `az appservice list-locations`
+describes the region rather than the subscription and will happily list a SKU
+you cannot have. The portal's quota blade may not help either - it needs
+`Microsoft.Quota` registered on the subscription.
+
+### It is an invocation, not a loop, and two settings make that safe
+
+`PIGEONHOLE_RESUME=1` and `PIGEONHOLE_ONCE=1`. Neither is optional and the
+first is the subtle one.
+
+The agent normally absorbs whatever id is in the drop when it starts, so that a
+host whose restart policy brings it back does not re-run the last step
+unwatched. **For a runner invoked fresh every tick, that rule means it answers
+nothing, ever** - and the failure is silent, because an unanswered request looks
+exactly like a slow one. `PIGEONHOLE_RESUME` reads the last answered id from the
+status blob instead, making the far side's own record the memory.
+
+`PIGEONHOLE_ONCE` ends the loop so the invocation can end. Without it the agent
+polls until the host kills it at the function timeout, and a step still running
+is lost with it.
+
+### There is no git in the image, and that is the feature
+
+The Functions Python image is Debian bookworm with bash 5.2, GNU sed 4.9 - so
+`sed -u` is honoured and a captured line is stamped when it is produced - and
+GNU coreutils. That is what `caplib.sh` needs, so the agent shells out to the
+bash toolkit rather than reimplementing capture in Python.
+
+What it does not have is `git`. So this host uses the **pigeonhole**, and blob
+storage behind a private endpoint needs no egress at all. That is why it works
+in a subnet with no route off it, where every other host failed.
+
+### A step can outlive the invocation
+
+`functionTimeout` in `host.json` is a hard wall. A step that overruns is killed
+mid-capture - survivable rather than silent, because the pigeonhole uploads a
+partial log every `PIGEONHOLE_PROGRESS` seconds, so a killed run still leaves
+the lines it managed and a status saying how far it got. Raise the timeout for
+slow steps rather than discovering the limit from a truncated log.
+
+### `run_on_startup` is false, deliberately
+
+It makes a Function run on every host restart, which the platform does for its
+own reasons at times nobody chose. A runner that answers a request because Azure
+recycled an instance is exactly the unattended rerun the startup rule exists to
+prevent.
 
 ## What we learned by deploying these
 
