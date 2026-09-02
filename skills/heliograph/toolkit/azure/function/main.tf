@@ -101,9 +101,19 @@ variable "pigeonhole_account" {
   type        = string
 }
 
+# EMPTY IS NORMAL ON THIS HOST. A Function authenticates as its managed
+# identity against a local token endpoint, which needs no egress - so a SAS is
+# only wanted where the estate prefers one, and is impossible where shared keys
+# are disabled on the account. Leaving this empty selects identity mode.
+#
+# Identity mode needs a role assignment the template does not make: the app's
+# principal needs Storage Blob Data Contributor on the drop account. Terraform
+# cannot grant it here without owning the account, which this deliberately does
+# not - see the header on bring-your-own.
 variable "pigeonhole_sas" {
-  description = "SAS for the drop. Never committed; keep the expiry short."
+  description = "SAS for the drop. Empty selects managed identity, which is the default on this host."
   type        = string
+  default     = ""
   sensitive   = true
 }
 
@@ -167,6 +177,11 @@ resource "azurerm_function_app_flex_consumption" "agent" {
   public_network_access_enabled = false
 
   virtual_network_subnet_id = var.subnet_id == "" ? null : var.subnet_id
+
+  # THE IDENTITY IS THE CREDENTIAL, not a convenience. It authenticates to the
+  # drop where no SAS can be minted, and it is what the deployment container
+  # is read with. Without it the app starts and can reach neither.
+  identity { type = "SystemAssigned" }
 
   site_config {
     vnet_route_all_enabled = var.subnet_id == "" ? false : var.vnet_route_all_enabled

@@ -35,7 +35,10 @@
 #  ENVIRONMENT
 #
 #    PIGEONHOLE_ACCOUNT   required. Azure Storage account name.
-#    PIGEONHOLE_SAS       required. SAS token. Leading '?' optional.
+#    PIGEONHOLE_AUTH      'sas' (default) or 'identity'. Identity uses the
+#                         Function host's local token endpoint, for estates
+#                         where shared keys are disabled and no SAS can exist.
+#    PIGEONHOLE_SAS       required when PIGEONHOLE_AUTH=sas. Leading '?' fine.
 #    PIGEONHOLE_LANE      which request this runner answers. Default: default
 #    PIGEONHOLE_POLL      seconds between polls. Default: 10
 #    PIGEONHOLE_PROGRESS  seconds between partial-log uploads. Default: 60
@@ -79,12 +82,41 @@ say() { printf '%s  %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 # only fails when a request finally arrives is the worst shape this can take:
 # nobody is watching the console, and the operator sees an unanswered request
 # with no way in to find out why.
-for v in ACCOUNT SAS; do
-  if [ -z "${!v}" ]; then
-    echo "pigeonhole: PIGEONHOLE_$v is not set. Cannot reach the drop." >&2
-    exit 2
-  fi
-done
+AUTH="${PIGEONHOLE_AUTH:-sas}"
+
+if [ -z "$ACCOUNT" ]; then
+  echo "pigeonhole: PIGEONHOLE_ACCOUNT is not set. Cannot reach the drop." >&2
+  exit 2
+fi
+
+# TWO CREDENTIALS, AND THE ESTATE DECIDES WHICH IS AVAILABLE.
+#
+# A SAS is validated by the storage service itself with no token round trip,
+# which is what makes it the only option on a host with no egress and no IMDS -
+# a VNet-injected container group, for instance.
+#
+# But a SAS needs the account key, and an estate can disable shared keys
+# outright: allowSharedKeyAccess = false means one cannot be minted at all.
+# Where that is so, a managed identity is the way in, and on an Azure Function
+# the token endpoint is LOCAL - IDENTITY_ENDPOINT, no egress - so it works in
+# exactly the subnets a SAS was reached for.
+case "$AUTH" in
+  sas)
+    if [ -z "$SAS" ]; then
+      echo "pigeonhole: PIGEONHOLE_SAS is not set. Cannot reach the drop." >&2
+      echo "pigeonhole: set PIGEONHOLE_AUTH=identity where shared keys are disabled." >&2
+      exit 2
+    fi ;;
+  identity)
+    if [ -z "${IDENTITY_ENDPOINT:-}" ] && [ -z "${PIGEONHOLE_IDENTITY_CMD:-}" ]; then
+      echo "pigeonhole: PIGEONHOLE_AUTH=identity but no IDENTITY_ENDPOINT is present." >&2
+      echo "pigeonhole: that variable is injected by the Function host; this is not one." >&2
+      exit 2
+    fi ;;
+  *)
+    echo "pigeonhole: PIGEONHOLE_AUTH must be 'sas' or 'identity', not '${AUTH}'." >&2
+    exit 2 ;;
+esac
 command -v curl >/dev/null 2>&1 || { echo "pigeonhole: curl is not installed." >&2; exit 2; }
 
 # A SAS pasted from the portal carries a leading '?'; one from `az storage
@@ -94,7 +126,48 @@ command -v curl >/dev/null 2>&1 || { echo "pigeonhole: curl is not installed." >
 SAS="${SAS#\?}"
 
 BASE="https://${ACCOUNT}.blob.core.windows.net"
+
+# 2021-08-06 for SAS. Entra authorisation on blob REST needs 2017-11-09 or
+# later, so one version serves both and there is no reason to branch on it.
 API_VERSION="2021-08-06"
+
+# THE TOKEN IS FETCHED PER REQUEST RATHER THAN CACHED, and that is deliberate
+# on a runner that answers one request per invocation: a cache would outlive
+# nothing, and an expiry check is more code than the call it saves. On a
+# long-running loop the cost is one local HTTP call per poll.
+identity_token() {
+  if [ -n "${PIGEONHOLE_IDENTITY_CMD:-}" ]; then
+    # A seam for the tests. Nothing in production sets this.
+    "$PIGEONHOLE_IDENTITY_CMD"
+    return
+  fi
+  curl -sS -H "X-IDENTITY-HEADER: ${IDENTITY_HEADER:-}" \
+    "${IDENTITY_ENDPOINT}?resource=https%3A%2F%2Fstorage.azure.com%2F&api-version=2019-08-01" \
+    2>/dev/null
+}
+
+# The auth arguments for one curl call, as an array. Returns the URL too,
+# because in SAS mode the credential lives in the query string and in identity
+# mode it must NOT - a request carrying both leaves nobody able to say which
+# credential was accepted.
+_auth_args=()
+_auth_url=""
+set_auth() {   # set_auth <container/path>
+  local path="$1"
+  if [ "$AUTH" = "identity" ]; then
+    local tok
+    tok="$(identity_token | sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+    if [ -z "$tok" ]; then
+      say "identity: no access_token returned by the token endpoint"
+      return 1
+    fi
+    _auth_args=(-H "Authorization: Bearer ${tok}")
+    _auth_url="${BASE}/${path}"
+  else
+    _auth_args=()
+    _auth_url="${BASE}/${path}?${SAS}"
+  fi
+}
 
 # --- the drop ----------------------------------------------------------------
 # Blob REST directly, not the SDK and not `az`. Two reasons, and neither is
@@ -115,9 +188,11 @@ API_VERSION="2021-08-06"
 drop_get() {
   # drop_get <container/path> [outfile]  -> 0 found, 1 absent, 2 error
   local path="$1" out="${2:-/dev/stdout}" code
+  set_auth "$path" || return 2
   code="$(curl -sS -o "$out" -w '%{http_code}' \
             -H "x-ms-version: ${API_VERSION}" \
-            "${BASE}/${path}?${SAS}" 2>/dev/null)" || return 2
+            "${_auth_args[@]}" \
+            "$_auth_url" 2>/dev/null)" || return 2
   case "$code" in
     200) return 0 ;;
     404) return 1 ;;
@@ -128,12 +203,14 @@ drop_get() {
 drop_put() {
   # drop_put <container/path> <file>
   local path="$1" file="$2" code
+  set_auth "$path" || return 1
   code="$(curl -sS -o /dev/null -w '%{http_code}' -X PUT \
             -H "x-ms-version: ${API_VERSION}" \
             -H "x-ms-blob-type: BlockBlob" \
             -H "Content-Type: text/plain; charset=utf-8" \
+            "${_auth_args[@]}" \
             --data-binary "@${file}" \
-            "${BASE}/${path}?${SAS}" 2>/dev/null)" || return 1
+            "$_auth_url" 2>/dev/null)" || return 1
   case "$code" in
     201) return 0 ;;
     *)   say "drop_put ${path}: HTTP ${code}"; return 1 ;;

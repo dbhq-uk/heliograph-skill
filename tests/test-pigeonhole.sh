@@ -42,7 +42,7 @@ while [ "$#" -gt 0 ]; do
     -o) out="$2"; shift 2 ;;
     -X) method="$2"; shift 2 ;;
     --data-binary) data="${2#@}"; shift 2 ;;
-    -H) shift 2 ;;
+    -H) case "$2" in Authorization:*) printf '%s\n' "$2" >> "$STORE/.authz" ;; esac; shift 2 ;;
     -w) shift 2 ;;
     -sS|-fsS|-s|-S|-f) shift ;;
     https://*) url="$1"; shift ;;
@@ -395,5 +395,55 @@ run_agent "$REPO" "$STORE" "$BIN"
 
 assert_eq "without resume, an id present at startup is still absorbed" "0" \
   "$(count_matching "$STORE/logs" 'echo-env-*.txt')"
+
+# =============================================================================
+#  Authenticating as a managed identity, where a SAS is not available
+# =============================================================================
+# A SAS needs the account key, and an estate can disable shared keys outright -
+# the account this was written against has allowSharedKeyAccess = false, so the
+# pigeonhole's only credential could not be minted at all.
+#
+# An Azure Function is handed IDENTITY_ENDPOINT and IDENTITY_HEADER: a LOCAL
+# token endpoint, needing no egress. That is the difference from a VNet-injected
+# container group, which has no IMDS at all and for which a SAS really is the
+# only option.
+
+make_fake_identity() {  # make_fake_identity <bin> <token>
+  local bin="$1" token="$2"
+  cat > "$bin/identity-endpoint" <<IDP
+#!/usr/bin/env bash
+printf '{"access_token":"${token}","expires_on":"99999999999"}'
+IDP
+  chmod +x "$bin/identity-endpoint"
+}
+
+STORE="$TMP/s9"; REPO="$TMP/r9"; BIN="$TMP/b9"
+mkdir -p "$STORE"; make_fake_curl "$BIN" "$STORE"; make_repo "$REPO"
+make_fake_identity "$BIN" "TOKEN-FROM-IDENTITY"
+write_request "$STORE" default "id: mi-1" "step: echo-env" "env:" "cancel:" "stop:"
+
+# No SAS at all. The agent must not refuse for want of one.
+( cd "$REPO" && timeout 20 env PATH="$BIN:$PATH" FAKE_STORE="$STORE" \
+    PIGEONHOLE_ACCOUNT=testacct \
+    PIGEONHOLE_AUTH=identity \
+    IDENTITY_ENDPOINT="fake" IDENTITY_HEADER="fake" \
+    PIGEONHOLE_IDENTITY_CMD="$BIN/identity-endpoint" \
+    PIGEONHOLE_RESUME=1 PIGEONHOLE_ONCE=1 PIGEONHOLE_POLL=1 \
+    ./pigeonhole.sh >"$STORE/.console" 2>&1 )
+
+assert_eq "identity mode runs a step with no SAS configured" "1" \
+  "$(count_matching "$STORE/logs" 'echo-env-*.txt')"
+assert_contains "and sends the token as a Bearer header" "Bearer TOKEN-FROM-IDENTITY" \
+  "$(cat "$STORE/.authz" 2>/dev/null)"
+
+# The query string must NOT carry a SAS in identity mode - a request that sends
+# both is one where nobody can say which credential was accepted.
+assert_eq "and does not also send a SAS" "0" \
+  "$(awk '/sig=/{n++} END{print n+0}' "$STORE/.queries" 2>/dev/null)"
+
+# Without either credential it must still refuse before it waits, so a
+# misconfigured runner fails loudly rather than polling forever.
+rc="$( PIGEONHOLE_ACCOUNT=x "$TOOLKIT/pigeonhole.sh" >/dev/null 2>&1; echo $? )"
+assert_eq "no SAS and no identity is still refused with exit 2" "2" "$rc"
 
 t_summary "test-pigeonhole.sh"

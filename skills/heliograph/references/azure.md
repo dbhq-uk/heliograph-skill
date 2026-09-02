@@ -66,6 +66,27 @@ status blob instead, making the far side's own record the memory.
 polls until the host kills it at the function timeout, and a step still running
 is lost with it.
 
+### A SAS may not exist at all, so this host uses its identity
+
+The pigeonhole was built around a SAS because the host it was written for - a
+VNet-injected container group - has no IMDS, so no token can be fetched at all.
+That reasoning does not carry to a Function.
+
+**An estate can disable shared keys outright.** `allowSharedKeyAccess = false`
+on the storage account means there is no key to sign a SAS with, and the
+transport's only credential simply cannot be created. That is not hypothetical:
+it is the posture on the account this host was first deployed against.
+
+A Function is handed `IDENTITY_ENDPOINT` and `IDENTITY_HEADER` - a **local**
+token endpoint, needing no egress - so `PIGEONHOLE_AUTH=identity` works in
+exactly the locked-down subnets the SAS path was reached for, without a
+credential anyone has to rotate. The Function host defaults to it whenever
+`IDENTITY_ENDPOINT` is present.
+
+**It needs a role assignment the template does not make.** The app's principal
+needs `Storage Blob Data Contributor` on the drop account. The templates are
+bring-your-own and do not own the account, so this is granted alongside.
+
 ### There is no git in the image, and that is the feature
 
 The Functions Python image is Debian bookworm with bash 5.2, GNU sed 4.9 - so

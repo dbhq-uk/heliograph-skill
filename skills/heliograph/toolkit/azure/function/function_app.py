@@ -72,6 +72,18 @@ def agent(timer: func.TimerRequest) -> None:
     env["PIGEONHOLE_RESUME"] = "1"
     env["PIGEONHOLE_ONCE"] = "1"
 
+    # IDENTITY BY DEFAULT ON THIS HOST, because a SAS may not be mintable at
+    # all: an estate can set allowSharedKeyAccess = false on the account, and
+    # then there is no key to sign one with. A Function is handed
+    # IDENTITY_ENDPOINT, a LOCAL token endpoint needing no egress - which is
+    # the thing a VNet-injected container group does not have, and the reason
+    # the SAS path exists for that host and not this one.
+    #
+    # Overridable: an estate that does allow shared keys can set
+    # PIGEONHOLE_AUTH=sas and pass PIGEONHOLE_SAS instead.
+    if "IDENTITY_ENDPOINT" in env:
+        env.setdefault("PIGEONHOLE_AUTH", "identity")
+
     # One poll. The timer is the schedule; a second poll inside one invocation
     # would only burn wall-clock the platform is already billing for.
     env.setdefault("PIGEONHOLE_POLL", "1")
