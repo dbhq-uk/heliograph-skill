@@ -446,4 +446,23 @@ assert_eq "and does not also send a SAS" "0" \
 rc="$( PIGEONHOLE_ACCOUNT=x "$TOOLKIT/pigeonhole.sh" >/dev/null 2>&1; echo $? )"
 assert_eq "no SAS and no identity is still refused with exit 2" "2" "$rc"
 
+# =============================================================================
+#  A prefix, for a drop that shares an account with something else
+# =============================================================================
+# The container names are fixed - requests, logs, status - which is fine on a
+# dedicated account and wrong on a shared one, where they say nothing about
+# whose they are and could collide with another stack's.
+STORE="$TMP/s10"; REPO="$TMP/r10"; BIN="$TMP/b10"
+mkdir -p "$STORE"; make_fake_curl "$BIN" "$STORE"; make_repo "$REPO"
+mkdir -p "$STORE/hg-requests"
+printf 'id: p-1\nstep: echo-env\nenv:\ncancel:\nstop:\n' > "$STORE/hg-requests/default.txt"
+run_agent "$REPO" "$STORE" "$BIN" PIGEONHOLE_PREFIX=hg- PIGEONHOLE_RESUME=1
+
+assert_eq "a prefixed drop is read" "1" \
+  "$(count_matching "$STORE/hg-logs" 'echo-env-*.txt')"
+assert_eq "and the unprefixed containers are untouched" "0" \
+  "$(count_matching "$STORE/logs" '*')"
+assert_contains "and status is prefixed too" "id:       p-1" \
+  "$(cat "$STORE/hg-status/default.txt" 2>/dev/null)"
+
 t_summary "test-pigeonhole.sh"

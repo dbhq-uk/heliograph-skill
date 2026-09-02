@@ -40,6 +40,8 @@
 #                         where shared keys are disabled and no SAS can exist.
 #    PIGEONHOLE_SAS       required when PIGEONHOLE_AUTH=sas. Leading '?' fine.
 #    PIGEONHOLE_LANE      which request this runner answers. Default: default
+#    PIGEONHOLE_PREFIX    prefix on the container names, for a drop sharing an
+#                         account with something else. Empty by default.
 #    PIGEONHOLE_POLL      seconds between polls. Default: 10
 #    PIGEONHOLE_PROGRESS  seconds between partial-log uploads. Default: 60
 #    PIGEONHOLE_ONCE      set to 1 to answer one request and exit
@@ -70,6 +72,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/caplib.sh"
 
 LANE="${PIGEONHOLE_LANE:-default}"
+
+# A PREFIX, FOR A DROP THAT SHARES AN ACCOUNT. The container names are fixed -
+# requests, logs, status - which is right on a dedicated account and wrong on a
+# shared one, where they say nothing about whose they are and could collide
+# with another stack's. Empty keeps the original names.
+PREFIX="${PIGEONHOLE_PREFIX:-}"
 POLL="${PIGEONHOLE_POLL:-10}"
 PROGRESS_EVERY="${PIGEONHOLE_PROGRESS:-60}"
 ACCOUNT="${PIGEONHOLE_ACCOUNT:-}"
@@ -256,7 +264,7 @@ publish_status() {
     printf 'utc:      %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     [ -n "$extra" ] && printf '%s\n' "$extra"
   } > "$tmp"
-  drop_put "status/${LANE}.txt" "$tmp" || true
+  drop_put "${PREFIX}status/${LANE}.txt" "$tmp" || true
   rm -f "$tmp"
 }
 
@@ -283,7 +291,7 @@ start_progress() {
     done
     while sleep "$PROGRESS_EVERY"; do
       [ -f "$logfile" ] || continue
-      drop_put "logs/$(basename "${logfile%.txt}").partial.txt" "$logfile" || true
+      drop_put "${PREFIX}logs/$(basename "${logfile%.txt}").partial.txt" "$logfile" || true
       publish_status "running" "$id" "$step" \
         "lines:    $(wc -l < "$logfile" 2>/dev/null || echo 0)"
     done
@@ -353,7 +361,7 @@ cap_refuse_root || exit 5
 # =============================================================================
 say "pigeonhole starting"
 say "  account : ${ACCOUNT}"
-say "  lane    : ${LANE}   (requests/${LANE}.txt)"
+say "  lane    : ${LANE}   (${PREFIX}requests/${LANE}.txt)"
 say "  poll    : ${POLL}s"
 say "  actions : $([ "$ALLOW_ACTIONS" = "1" ] && echo allowed || echo 'refused (the default)')"
 
@@ -366,7 +374,7 @@ FIRST_POLL=1
 # invocation, which on a five-minute timer is twelve identical runs an hour.
 if [ "${PIGEONHOLE_RESUME:-0}" = "1" ]; then
   _st="$(mktemp)"
-  if drop_get "status/${LANE}.txt" "$_st"; then
+  if drop_get "${PREFIX}status/${LANE}.txt" "$_st"; then
     LAST_ID="$(sed -n 's/^id:[[:space:]]*//p' "$_st" | head -1)"
   fi
   rm -f "$_st"
@@ -381,7 +389,7 @@ publish_status "starting" "$LAST_ID" ''
 
 while :; do
   REQ_FILE="$(mktemp)"
-  if drop_get "requests/${LANE}.txt" "$REQ_FILE"; then
+  if drop_get "${PREFIX}requests/${LANE}.txt" "$REQ_FILE"; then
     ID="$(field id)"
     STEP="$(field step)"
     ENV_EXTRA="$(field env)"
@@ -523,7 +531,7 @@ while :; do
 
       LOG_FILE="$(find "$RUN_DIR" -maxdepth 1 -type f -name '*.txt' 2>/dev/null | head -1)"
       if [ -n "$LOG_FILE" ] && [ -f "$LOG_FILE" ]; then
-        BLOB="logs/$(basename "$LOG_FILE")"
+        BLOB="${PREFIX}logs/$(basename "$LOG_FILE")"
         if drop_put "$BLOB" "$LOG_FILE"; then
           say "log delivered: ${BLOB}  exit=${RC}"
           publish_status "idle" "$ID" "$STEP" \
@@ -557,7 +565,7 @@ while :; do
     # No request blob yet is the normal resting state of a freshly created
     # drop, not an error. Say it once rather than every poll.
     if [ "$FIRST_POLL" = "1" ]; then
-      say "no request at requests/${LANE}.txt yet - waiting"
+      say "no request at ${PREFIX}requests/${LANE}.txt yet - waiting"
       publish_status "idle" "" ""
       FIRST_POLL=0
     fi
