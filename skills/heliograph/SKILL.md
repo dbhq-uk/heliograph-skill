@@ -232,8 +232,7 @@ investigation.
 ## Running it in Azure, instead of on somebody's terminal
 
 Sometimes there is no willing human to start `./start.sh` and leave it running.
-`toolkit/azure/` runs the agent as Azure infrastructure instead. Four hosts,
-each in bicep and Terraform:
+`toolkit/azure/` runs the agent as Azure infrastructure instead. Five hosts:
 
 | host | state |
 |---|---|
@@ -241,11 +240,19 @@ each in bicep and Terraform:
 | Web App for Containers | deployed and proven |
 | Container Apps Job, scheduled | deployed and proven |
 | VM with a systemd unit | written and validates, never deployed |
+| **Function App, Flex Consumption** | written and validates, Terraform only |
 
 All bring-your-own: the estate passes in a VNet, subnet, plan or environment
 that already exists, and the template creates the compute and nothing else. The
 checkout is transient. Git is the persistence, so if the compute dies you run
 the step again.
+
+**The Function host is the exception to all of that**, and the one to reach for
+when the estate will not give you anywhere to keep a process. It is not a loop:
+a timer answers at most one request per tick, so it needs `PIGEONHOLE_RESUME=1`
+to know what it already answered. There is no `git` in its image, so it uses the
+blob transport - which means it needs no egress at all, and works in a subnet
+with no route off it. See [references/azure.md](references/azure.md).
 
 Two things that will waste your time if you do not know them:
 

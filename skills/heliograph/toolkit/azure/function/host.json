@@ -1,0 +1,14 @@
+{
+  "version": "2.0",
+  "logging": {
+    "applicationInsights": {
+      "samplingSettings": { "isEnabled": true, "excludedTypes": "Request" }
+    }
+  },
+  "extensionBundle": {
+    "id": "Microsoft.Azure.Functions.ExtensionBundle",
+    "version": "[4.*, 5.0.0)"
+  },
+  "//functionTimeout": "THE HARD WALL A STEP CAN HIT. Flex Consumption allows a longer ceiling than the older plans, but there is still one, and a step that overruns is killed mid-capture. That is survivable rather than silent: pigeonhole.sh uploads a partial log every PIGEONHOLE_PROGRESS seconds, so a killed run still leaves the lines it managed and a status saying how far it got. Raise this for slow steps rather than discovering the limit from a truncated log.",
+  "functionTimeout": "00:30:00"
+}

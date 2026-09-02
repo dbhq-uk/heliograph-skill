@@ -40,6 +40,10 @@
 #    PIGEONHOLE_POLL      seconds between polls. Default: 10
 #    PIGEONHOLE_PROGRESS  seconds between partial-log uploads. Default: 60
 #    PIGEONHOLE_ONCE      set to 1 to answer one request and exit
+#    PIGEONHOLE_RESUME    set to 1 for a runner with no memory between runs -
+#                         reads the last answered id from the status blob
+#                         rather than absorbing whatever is in the drop at
+#                         startup. Pair it with PIGEONHOLE_ONCE for a timer.
 #    PIGEONHOLE_ALLOW_ACTIONS
 #                         set to 1 to permit steps that declare themselves
 #                         actions. Default 0: this runner is read-only unless
@@ -276,12 +280,27 @@ say "  lane    : ${LANE}   (requests/${LANE}.txt)"
 say "  poll    : ${POLL}s"
 say "  actions : $([ "$ALLOW_ACTIONS" = "1" ] && echo allowed || echo 'refused (the default)')"
 
-# Proves the SAS and the network before anything depends on them, and leaves a
-# record that this runner is alive even if no request ever arrives.
-publish_status "starting" "" ""
-
 LAST_ID=""
 FIRST_POLL=1
+
+# READ BEFORE WRITING, because in resume mode the status blob IS the memory and
+# the "starting" publish below would erase the very id it has to read back.
+# That bug is quiet: the runner would answer the same request on every
+# invocation, which on a five-minute timer is twelve identical runs an hour.
+if [ "${PIGEONHOLE_RESUME:-0}" = "1" ]; then
+  _st="$(mktemp)"
+  if drop_get "status/${LANE}.txt" "$_st"; then
+    LAST_ID="$(sed -n 's/^id:[[:space:]]*//p' "$_st" | head -1)"
+  fi
+  rm -f "$_st"
+  say "resume: last answered id is '${LAST_ID:-<none>}'"
+fi
+
+# Proves the SAS and the network before anything depends on them, and leaves a
+# record that this runner is alive even if no request ever arrives. It carries
+# the resumed id so that a run which stops here does not erase the record of
+# what was last answered.
+publish_status "starting" "$LAST_ID" ''
 
 while :; do
   REQ_FILE="$(mktemp)"
@@ -293,15 +312,25 @@ while :; do
     CANCEL="$(field cancel)"
 
     if [ "$FIRST_POLL" = "1" ]; then
-      # An id already in the drop at startup is not a trigger. A host whose
-      # restart policy brings it back would otherwise re-run the last step
-      # every time it came back, with nobody watching and no way to tell the
-      # reruns apart.
-      LAST_ID="$ID"
       FIRST_POLL=0
-      [ -n "$ID" ] && say "startup: id '${ID}' already present, not re-running it"
-      publish_status "idle" "$ID" "$STEP"
-      rm -f "$REQ_FILE"; sleep "$POLL"; continue
+      if [ "${PIGEONHOLE_RESUME:-0}" = "1" ]; then
+        # THE STATUS BLOB IS THE MEMORY, and it was already read above - before
+        # the "starting" publish could overwrite it. Nothing to do here but
+        # fall through to the trigger check: the whole point of this mode is to
+        # act on THIS poll rather than the next one, because for a runner
+        # invoked once there is no next one.
+        :
+      else
+        # An id already in the drop at startup is not a trigger. A host whose
+        # restart policy brings it back would otherwise re-run the last step
+        # every time it came back, with nobody watching and no way to tell the
+        # reruns apart. That is the right rule for a long-running loop, and
+        # the wrong one for a runner with no memory - hence the mode above.
+        LAST_ID="$ID"
+        [ -n "$ID" ] && say "startup: id '${ID}' already present, not re-running it"
+        publish_status "idle" "$ID" "$STEP"
+        rm -f "$REQ_FILE"; sleep "$POLL"; continue
+      fi
     fi
 
     # CANCEL IS NOT IMPLEMENTED HERE, AND SAYS SO RATHER THAN DOING NOTHING.

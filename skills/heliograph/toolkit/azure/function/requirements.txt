@@ -1,0 +1,5 @@
+# The agent is bash. This is only what the Function host itself needs to call
+# it, which is why there is nothing else here - no SDK, no storage client. The
+# toolkit talks to the drop with curl, which the image already has, and adding
+# a Python storage client would be a second implementation of the transport.
+azure-functions
