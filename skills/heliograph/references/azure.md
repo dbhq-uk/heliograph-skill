@@ -69,8 +69,16 @@ is lost with it.
 ### A SAS may not exist at all, so this host uses its identity
 
 The pigeonhole was built around a SAS because the host it was written for - a
-VNet-injected container group - has no IMDS, so no token can be fetched at all.
-That reasoning does not carry to a Function.
+VNet-injected container group - was believed to have no IMDS, so no token could
+be fetched at all.
+
+**That belief was wrong, and this document contradicted itself about it until
+2026-09-03.** "Managed identity works in a VNet-injected ACI" below is the
+measured claim - a container group with a user-assigned identity, in a delegated
+subnet, asked IMDS for a token and got HTTP 200 back - and a measurement beats a
+confidently asserted negative. The SAS was never the only option on ACI either.
+
+The reasoning that does carry, and the one that actually forces identity here:
 
 **An estate can disable shared keys outright.** `allowSharedKeyAccess = false`
 on the storage account means there is no key to sign a SAS with, and the
@@ -97,6 +105,24 @@ bash toolkit rather than reimplementing capture in Python.
 What it does not have is `git`. So this host uses the **pigeonhole**, and blob
 storage behind a private endpoint needs no egress at all. That is why it works
 in a subnet with no route off it, where every other host failed.
+
+### It carries both transports, and the estate picks
+
+A Function App is the one host so far whose endpoint the control node can
+usually reach, because it has a public HTTPS front door *and* sits inside the
+VNet. When that is true the pigeonhole is indirection with no purpose, and
+[intercom](intercom.md) submits the step over HTTPS instead: no storage
+credentials for the operator, no timer interval, a round trip in seconds.
+
+Both ship in the same `function_app.py` and share `run.sh`. Leaving
+`HELIOGRAPH_ACCOUNT` unset leaves intercom off; setting `HELIOGRAPH_SCHEDULE` to
+a date that never comes leaves the pigeonhole off. Running both is fine, and is
+what the reference deployment does.
+
+The trade intercom makes is real and is stated in its own reference: it runs the
+script the caller sends, so the mode header becomes self-declared and the
+function key plus the IP allowlist are the only controls left. **Do not deploy it
+without both.**
 
 ### A step can outlive the invocation
 

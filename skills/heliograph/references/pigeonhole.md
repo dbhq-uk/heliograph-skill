@@ -57,9 +57,15 @@ The host downloads and extracts that at start. The useful consequence is that **
 
 **You** use your normal identity - `az ... --auth-mode login` - because you have internet and can reach the identity provider.
 
-**The agent uses a SAS**, and it is not a shortcut. Every other credential needs a network call before it can be used: a managed identity needs the instance metadata service, a service principal needs `login.microsoftonline.com`. A host with no egress has neither, and on a VNet-injected Azure Container Instance there is no instance metadata service at all. A SAS is validated by the storage service itself with no token round trip, so it is the only credential that works from in there.
+**The agent uses a SAS or its own managed identity**, and neither is a shortcut. A SAS is validated by the storage service itself with no token round trip, so it needs no egress of its own; a service principal would need `login.microsoftonline.com`, which a host with no egress cannot reach.
 
-Two consequences worth stating plainly:
+> **Corrected 2026-09-03.** This section used to say a SAS was *the only* credential that works, on the grounds that a VNet-injected Azure Container Instance has no instance metadata service. **That is false and was never measured.** A container group with a user-assigned identity in a delegated subnet asks IMDS for a token and gets HTTP 200 back - tested, and recorded in [azure.md](azure.md). The claim survived because a negative asserted confidently reads like a finding; the measured result is the one that stands.
+
+So prefer `PIGEONHOLE_AUTH=identity` wherever an identity is available. An Azure Function makes the case plainest: it is handed `IDENTITY_ENDPOINT`, a **local** token endpoint needing no egress at all.
+
+**And sometimes a SAS cannot exist.** `allowSharedKeyAccess = false` on the account means there is no key to sign one with, so the transport's only credential simply cannot be created - which makes identity the requirement rather than the preference. That is the posture on the account this was first deployed against.
+
+Where a SAS is still used, two consequences are worth stating plainly:
 
 - **The account must allow shared keys**, because minting a SAS requires the account key. If your other storage accounts have shared keys disabled, this one is a deliberate exception and should say so in its own configuration.
 - **An expired SAS does not fail loudly.** The agent keeps polling, every request returns 403, and you see a request that is never answered - indistinguishable from a step that is still running. Know the expiry date, and check the status blob's timestamp before assuming a step is slow.

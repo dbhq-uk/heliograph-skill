@@ -191,6 +191,29 @@ a container can start cleanly on a host with no network at all. When to use it,
 how the lane replaces branch binding, and the traps:
 [references/pigeonhole.md](references/pigeonhole.md).
 
+### When you can reach the agent
+
+The rarer case, and worth checking for before assuming the pigeonhole. An Azure
+Function App has a public HTTPS endpoint *and* sits inside the VNet, so the
+control node can call it directly. Then storage is indirection with no purpose:
+credentials to hold, a timer interval to wait, four blob operations to move text
+between two machines that can already talk.
+
+`intercom.sh` submits the step over HTTPS and polls for its log. The capture is
+again untouched - it still calls `run.sh`.
+
+```bash
+export INTERCOM_URL=https://<app>.azurewebsites.net
+export INTERCOM_KEY=<the function key>
+./intercom.sh run steps/net-probe.sh HOSTS="sql.example" PORTS=1433
+```
+
+**It runs the script you send it**, which is what keeps the loop fast where there
+is no git on the far side - and also means `heliograph-mode:` becomes a claim the
+caller makes about its own file rather than a control. The function key and the
+IP allowlist are then the only real ones, and both must be deployed. Read
+[references/intercom.md](references/intercom.md) before exposing it.
+
 ## 5. Read the log
 
 - **Header block first**: branch, commit, host, user. A divergence between the
@@ -310,6 +333,7 @@ store the far side has. Details, and why each guard is there:
 | [references/method.md](references/method.md) | how to debug across a gap. The expensive lessons |
 | [references/transport.md](references/transport.md) | how the control node authenticates to the git host |
 | [references/pigeonhole.md](references/pigeonhole.md) | the blob transport, for a control node that cannot reach git at all |
+| [references/intercom.md](references/intercom.md) | the HTTP transport, for the rarer case where you can reach the agent |
 | [references/azure.md](references/azure.md) | running the agent in Azure, and what deploying it taught us |
 | [references/secrets.md](references/secrets.md) | `secret.sh`, for a value that has to reach the far side |
 | [references/remote-repo.md](references/remote-repo.md) | changing a repo that is also on the far side |

@@ -5,6 +5,7 @@
 #
 #     git pull && ./run.sh            # runs whatever step is currently set
 #     git pull && ./run.sh <step>     # or name one explicitly
+#     ./run.sh /path/to/probe.sh      # or point at a step file directly
 #     ./run.sh --list                 # what steps exist on this branch
 #     ./run.sh --mode <step>          # what that step DECLARES itself to be
 #     ./run.sh --file <step>          # which file that declaration came from
@@ -52,6 +53,20 @@ MODE_QUERY=0
 [ -n "$QUERY" ] && MODE_QUERY=1
 
 STEP="${1:-$DEFAULT_STEP}"
+
+# A STEP GIVEN AS A PATH IS RESOLVED HERE, before the cd to REPO_ROOT below.
+# After that cd a relative path would silently resolve next to run.sh instead of
+# next to the caller, and the caller would be told their own file is an unknown
+# step. Absolute paths are unaffected either way; this is for `./run.sh
+# ./probe.sh`.
+#
+# A name from the step table always wins - the table is consulted first - so a
+# file that happens to be called `env` in the working directory cannot shadow the
+# shipped step of that name.
+STEP_PATH=""
+if [ -f "$STEP" ] && [ -r "$STEP" ]; then
+  STEP_PATH="$(cd "$(dirname "$STEP")" && pwd)/$(basename "$STEP")"
+fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=caplib.sh disable=SC1091
@@ -153,9 +168,44 @@ case "$STEP" in
   # deploy)  CMD=(./steps/deploy.sh) ;;      # declares 'action' - never the default step
 
   *)
-    echo "unknown step: $STEP" >&2
-    echo "run '$0 --list' to see the steps on this branch." >&2
-    exit 2 ;;
+    # A STEP MAY ALSO BE A FILE. The table above indexes what ships on this
+    # branch, and it cannot list a step that does not exist yet. intercom submits
+    # the script with the request, and a Flex Consumption package is mounted
+    # read-only, so there is nowhere under steps/ to write one to.
+    #
+    # This changes nothing about what is allowed to run. The mode gate below
+    # reads the declaration out of whatever file is about to be executed, so a
+    # submitted script with no `heliograph-mode:` header refuses exactly as a
+    # committed one does.
+    if [ -n "$STEP_PATH" ]; then
+      case "$STEP_PATH" in
+        # ps_step runs the file through `pwsh -File`, which does not need the
+        # execute bit, so the check below would refuse a perfectly runnable step.
+        *.ps1) ps_step "$STEP_PATH" ;;
+        *)
+          # SAID HERE RATHER THAN LET BASH SAY IT. Without this the run reaches
+          # cap_run, fails 126, and the log reads
+          # "caplib.sh: line 276: ...: Permission denied" - which points at the
+          # capture library rather than at the file the caller passed, and looks
+          # like a bug in heliograph rather than a missing chmod. A step given by
+          # path is usually one somebody has just written, so this is the common
+          # case, not the edge case.
+          #
+          # MODE_QUERY is exempt: --mode and --file promise to touch nothing, and
+          # a declaration is readable whether or not the file can be executed.
+          if [ "$MODE_QUERY" != "1" ] && [ ! -x "$STEP_PATH" ]; then
+            echo "step file is not executable: $STEP_PATH" >&2
+            echo "    chmod +x $STEP_PATH" >&2
+            exit 2
+          fi
+          CMD=("$STEP_PATH") ;;
+      esac
+    else
+      echo "unknown step: $STEP" >&2
+      echo "run '$0 --list' to see the steps on this branch," >&2
+      echo "or give the path to a step file." >&2
+      exit 2
+    fi ;;
 esac
 
 # --- a step declares what it is, and an undeclared step does not run ----------
@@ -216,7 +266,16 @@ cap_refuse_root || exit 5
 OUT_DIR="${LOG_DIR:-$REPO_ROOT/ops-logs}"
 mkdir -p "$OUT_DIR"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-OUT="$OUT_DIR/${STEP}-${STAMP}.txt"
+
+# The log is named for the step, and a step given as a path would otherwise put
+# its own directories into the filename - `ops-logs//tmp/x/probe.sh-<stamp>.txt`,
+# which lands outside OUT_DIR entirely and takes the log with it. The banner and
+# the commit message keep the full path, because there the caller wants to see
+# exactly what ran.
+STEP_LABEL="$(basename "$STEP")"
+STEP_LABEL="${STEP_LABEL%.sh}"
+STEP_LABEL="${STEP_LABEL%.ps1}"
+OUT="$OUT_DIR/${STEP_LABEL}-${STAMP}.txt"
 
 cap_banner "STEP: $STEP"
 cap_header "$OUT" "STEP: $STEP" "command: ${CMD[*]}"
