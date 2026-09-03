@@ -121,6 +121,17 @@ On the Function App:
 
 The identity needs **Storage Blob Data Contributor** and **Storage Queue Data Contributor** on the account. Without the queue role the app indexes, the routes answer, and nothing ever runs - which looks like a hung step rather than a missing grant.
 
+The container and queue are created on first use if they are absent, so terraform does not have to own them. That needs the two roles above, which is another way the missing grant shows up late.
+
+## Deploying
+
+```bash
+${CLAUDE_SKILL_DIR}/toolkit/azure/function/build.sh /tmp/heliograph-function.zip
+az functionapp deployment source config-zip -g <rg> -n <app> --src /tmp/heliograph-function.zip
+```
+
+`build.sh` flattens the toolkit into the package root, so `function_app.py`, `run.sh` and `caplib.sh` end up beside each other, and vendors the dependencies into `.python_packages/lib/site-packages`. **Dependencies are vendored rather than built remotely** because a remote build needs the platform to reach a package index, and this host exists for estates where outbound is the thing that does not work.
+
 ## Limits
 
 - **No cancel.** The pigeonhole has one; intercom will not until something wants it.
