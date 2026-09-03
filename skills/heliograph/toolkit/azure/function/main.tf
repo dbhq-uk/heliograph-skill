@@ -249,6 +249,28 @@ resource "azurerm_function_app_flex_consumption" "agent" {
   }
 
   app_settings = {
+    # DECLARED EMPTY, AND ON PURPOSE. Where the storage account has shared keys
+    # disabled, this provider writes an AzureWebJobsStorage connection string
+    # with an EMPTY AccountKey every time it updates the app: it cannot read a
+    # key, and writes the string anyway. The host PREFERS that over
+    # AzureWebJobsStorage__accountName, tries shared-key auth, and cannot reach
+    # its own key store - every call answers 401 and listkeys returns
+    # "Encountered an error (InternalServerError) from host runtime", which
+    # reads as a broken runtime rather than a bad setting.
+    #
+    # Terraform does not see it as drift on its own, because a key it does not
+    # manage is a key it does not look at. Naming it here makes it managed.
+    #
+    # THIS COSTS A PERMANENT ONE-LINE DIFF, which is the cheaper half of the
+    # trade. Azure drops an empty setting rather than storing it, so terraform
+    # reads it back as absent and proposes it again on every plan.
+    #
+    # `ignore_changes` on this key removes the diff and was MEASURED to break
+    # it: with the key ignored, a genuine app update (changing a tag was enough)
+    # had the provider write the broken string straight back. The declaration
+    # only works while it is live.
+    AzureWebJobsStorage = ""
+
     PIGEONHOLE_ACCOUNT  = var.pigeonhole_account
     PIGEONHOLE_SAS      = var.pigeonhole_sas
     PIGEONHOLE_LANE     = var.pigeonhole_lane
@@ -331,14 +353,11 @@ output "required_roles" {
   value       = var.intercom_queue_mode ? "Storage Blob Data Contributor, Storage Queue Data Contributor" : "Storage Blob Data Contributor"
 }
 
-# THE SETTING THIS MODULE CANNOT STOP THE PROVIDER WRITING. On an account with
-# shared keys disabled, azurerm writes an AzureWebJobsStorage connection string
-# with an EMPTY AccountKey on every update - it cannot read a key, and writes the
-# string anyway. The host prefers it over AzureWebJobsStorage__accountName, fails
-# to authenticate, and cannot reach its key store: every call answers 401 and
-# listkeys returns "Encountered an error (InternalServerError) from host
-# runtime", which reads like a broken runtime rather than a bad setting.
-output "after_every_apply" {
-  description = "Run this after each apply, or the app cannot read its own keys."
-  value       = "az functionapp config appsettings delete -g ${var.resource_group_name} -n ${var.name} --setting-names AzureWebJobsStorage"
+# WHY EVERY PLAN SAYS "1 to change". The AzureWebJobsStorage note in
+# app_settings above explains it: the empty value cannot be stored, so terraform
+# proposes it again each time. The diff is always that one key. If a plan shows
+# anything else, that part is real.
+output "expected_permanent_diff" {
+  description = "The one diff every plan will show, so a real change is not lost in it."
+  value       = "app_settings[\"AzureWebJobsStorage\"] - see the note in main.tf"
 }
