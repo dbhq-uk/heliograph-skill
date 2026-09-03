@@ -156,7 +156,20 @@ Every one of these presents as something other than what it is.
 
 **`az functionapp deployment source config-zip` triggers a remote Oryx build**, which fetches the Python SDK list from an external endpoint. With no egress that returns nothing and the deploy dies inside Oryx's XML parser - `Value cannot be null. (Parameter 'node')`, which reads like a corrupt package. Deploy through OneDeploy with the build off instead, which is what the `Deploying` section above does. The dependencies are already vendored; there is nothing to build.
 
-**The azurerm provider writes an `AzureWebJobsStorage` connection string with an EMPTY `AccountKey`** whenever the app is updated, even with `storage_authentication_type = "SystemAssignedIdentity"`. It cannot read a key, because the account has shared keys disabled - so it writes the string anyway with nothing in that field. The host then prefers it over `AzureWebJobsStorage__accountName`, fails to authenticate, and cannot reach its key store. Every call answers 401, and `listkeys` returns `Encountered an error (InternalServerError) from host runtime` - which reads like a broken runtime. **Delete that setting after every apply.**
+**The azurerm provider writes an `AzureWebJobsStorage` connection string with an EMPTY `AccountKey`** whenever the app is updated, even with `storage_authentication_type = "SystemAssignedIdentity"`. It cannot read a key, because the account has shared keys disabled - so it writes the string anyway with nothing in that field. The host then prefers it over `AzureWebJobsStorage__accountName`, fails to authenticate, and cannot reach its key store. Every call answers 401, and `listkeys` returns `Encountered an error (InternalServerError) from host runtime` - which reads like a broken runtime.
+
+The fix is to declare the key empty so terraform owns it and overwrites the provider on every apply:
+
+```hcl
+app_settings = {
+  AzureWebJobsStorage              = ""
+  AzureWebJobsStorage__accountName = "<account>"
+}
+```
+
+The host tolerates the empty value and falls back to `__accountName`. **It costs a permanent one-line diff**, because Azure drops an empty setting rather than storing it, so terraform reads it back as absent and proposes it again on every plan.
+
+`ignore_changes` on that key removes the diff and **was measured to break it**: with the key ignored, a genuine app update - changing a tag was enough - had the provider write the broken string straight back. The declaration only works while it is live, so the noise is the price. Every plan says "1 to change" and shows that one key; anything else in a plan is real.
 
 **A storage private endpoint is per sub-resource.** A `blob` endpoint does nothing for `queue`. In queue mode the symptom is a POST that never returns at all while the task blob sits at `status: queued`: the blob write succeeded and the enqueue is hanging on a public address routed to a firewall. Indistinguishable from a busy worker.
 
