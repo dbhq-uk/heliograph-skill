@@ -23,19 +23,39 @@
 #  not a limitation here: blob storage behind a private endpoint needs no
 #  egress at all, which is the reason this host can work where the others
 #  could not.
+#
+#  THIS HOST CARRIES BOTH TRANSPORTS, and which one to use is a property of the
+#  estate rather than a preference:
+#
+#    the timer + pigeonhole   when nothing can reach the agent. Still the
+#                             common case, and still why this host exists.
+#    the intercom HTTP pair   when the agent's endpoint IS reachable, which a
+#                             Function App's is. The operator then needs no
+#                             storage credentials and waits no timer interval.
+#
+#  They share run.sh and caplib.sh and disagree about nothing. Deploying with
+#  HELIOGRAPH_SCHEDULE set to a date that never comes leaves intercom alone;
+#  leaving HELIOGRAPH_ACCOUNT unset leaves the pigeonhole alone.
 # =============================================================================
+import asyncio
+import json
 import logging
 import os
 import pathlib
 import subprocess
+import time
 
 import azure.functions as func
 
+import intercom
+
 app = func.FunctionApp()
 
-# The toolkit ships beside this file in the deployment package. Resolved from
-# __file__ rather than the working directory, which the host does not promise.
-TOOLKIT = pathlib.Path(__file__).parent
+# The toolkit ships beside this file in the deployment package, and two levels
+# up in the repository. intercom.py finds it by looking for run.sh and caplib.sh
+# rather than by counting directories, and there is no reason for a second copy
+# of that here - see the note there for what the counted version got wrong.
+TOOLKIT = intercom.TOOLKIT
 
 
 @app.timer_trigger(
@@ -112,3 +132,130 @@ def agent(timer: func.TimerRequest) -> None:
 
     if result.returncode != 0:
         logging.error("heliograph: agent exited %s", result.returncode)
+
+
+# =============================================================================
+#  intercom - the HTTP pair
+# =============================================================================
+#  Both routes are auth_level=FUNCTION, so a caller needs the function key. That
+#  is ONE control and it is not enough on its own: this endpoint runs
+#  caller-supplied shell inside the VNet, which is what makes it useful and also
+#  what makes a leaked key arbitrary code execution. The second control is the
+#  ip_restriction in terraform, and the two are meant to be deployed together.
+#
+#  The mode header is NOT a third control. When the caller writes the script the
+#  caller writes its `heliograph-mode:` line too, so it is a claim about itself.
+#  run.sh has always said as much: nothing in a shell runner can stop an author
+#  declaring read-only and then writing `rm -rf`. HELIOGRAPH_ALLOW_ACTIONS
+#  guards against the MISTAKE - a step pasted with the wrong header - and the
+#  reference says so in those words rather than dressing it up as security.
+# =============================================================================
+
+# Built once per worker and reused. Lazily, because a missing HELIOGRAPH_ACCOUNT
+# must not take the timer trigger down with it: a pigeonhole-only deployment
+# configures no account at all, and an import-time failure here would stop the
+# whole app indexing rather than only the routes that need a store.
+_STORE = None
+
+
+def _store():
+    global _STORE
+    if _STORE is None:
+        import store
+
+        _STORE = store.BlobStore()
+        _STORE.ensure()
+    return _STORE
+
+
+def _json(body: dict, status: int) -> func.HttpResponse:
+    return func.HttpResponse(
+        json.dumps(body), status_code=status, mimetype="application/json"
+    )
+
+
+@app.route(route="run", methods=["POST"], auth_level=func.AuthLevel.FUNCTION)
+async def run(req: func.HttpRequest) -> func.HttpResponse:
+    """Submit a step. Answers with the log, or with a task id to poll."""
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _json({"error": "body must be JSON"}, 400)
+
+    try:
+        task = await asyncio.to_thread(intercom.submit, _store(), body)
+    except intercom.Refused as refused:
+        return _json({"error": str(refused)}, 400)
+
+    logging.info("intercom: queued %s (%s)", task["taskId"], task["name"])
+
+    # THE WAIT IS HERE AND THE WORK IS NOT. This polls the result blob; the
+    # queue trigger below does the running. See intercom.py for why that
+    # separation is not optional on Flex Consumption.
+    #
+    # asyncio.sleep rather than a sync sleep, and to_thread for the SDK calls,
+    # so a 200-second wait holds no worker thread. A blocking wait here could
+    # starve the queue trigger of the very thread it needs to answer it, and
+    # that deadlock would present as "every request times out" with nothing in
+    # the logs to say why.
+    deadline = time.monotonic() + task["wait"]
+    while True:
+        settled = await asyncio.to_thread(_store().get_task, task["taskId"])
+        if settled and settled["status"] in ("done", "refused", "failed"):
+            done = await asyncio.to_thread(intercom.fetch, _store(), task["taskId"], 0)
+            return _json(done, 200)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return _json(
+                {
+                    "taskId": task["taskId"],
+                    "name": task["name"],
+                    "status": settled["status"] if settled else "queued",
+                    "poll": f"/api/task/{task['taskId']}",
+                },
+                202,
+            )
+        await asyncio.sleep(min(0.5, remaining))
+
+
+@app.route(route="task/{taskId}", methods=["GET"], auth_level=func.AuthLevel.FUNCTION)
+async def task(req: func.HttpRequest) -> func.HttpResponse:
+    """Poll a task. `offset` pages a large log rather than truncating it."""
+    task_id = req.route_params.get("taskId")
+    try:
+        offset = int(req.params.get("offset", "0"))
+    except ValueError:
+        return _json({"error": "offset must be an integer"}, 400)
+    if offset < 0:
+        return _json({"error": "offset must not be negative"}, 400)
+
+    found = await asyncio.to_thread(intercom.fetch, _store(), task_id, offset)
+    if found is None:
+        return _json({"error": f"no such task: {task_id}"}, 404)
+    return _json(found, 200)
+
+
+# The queue name is a binding expression, so it comes from HELIOGRAPH_QUEUE and
+# the app WILL NOT INDEX without it - every function in this file, the timer
+# included, goes with it. Terraform always sets it; a hand-built deployment must
+# too. The connection is AzureWebJobsStorage, which is already identity-based
+# via AzureWebJobsStorage__accountName, so no second credential is configured.
+@app.queue_trigger(
+    arg_name="msg", queue_name="%HELIOGRAPH_QUEUE%", connection="AzureWebJobsStorage"
+)
+def worker(msg: func.QueueMessage) -> None:
+    """Run one submitted step. Its own invocation, its own timeout budget."""
+    task_id = msg.get_body().decode().strip()
+    logging.info("intercom: running %s", task_id)
+
+    # No try/except around this. A step that fails is a result and execute()
+    # records it as one; an exception here means the AGENT failed, and letting
+    # the queue retry it is the right answer to that.
+    settled = intercom.execute(_store(), task_id)
+    logging.info(
+        "intercom: %s finished status=%s exit=%s bytes=%s",
+        task_id,
+        settled.get("status"),
+        settled.get("exit"),
+        settled.get("logBytes"),
+    )

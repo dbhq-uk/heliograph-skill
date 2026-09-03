@@ -1,5 +1,21 @@
-# The agent is bash. This is only what the Function host itself needs to call
-# it, which is why there is nothing else here - no SDK, no storage client. The
-# toolkit talks to the drop with curl, which the image already has, and adding
-# a Python storage client would be a second implementation of the transport.
+# The agent is bash. The Function host only calls it, which is why this list is
+# as short as it is.
 azure-functions
+
+# THE PIGEONHOLE ADDS NOTHING HERE, and that is deliberate: it talks to the drop
+# with curl, which the image already has, and a Python client for the same blobs
+# would be a second implementation of one transport with no answer to which is
+# authoritative.
+#
+# intercom is a different case and these three are its cost. Its storage is not
+# a transport - the operator never touches it - it is where a task and its log
+# live between two HTTP invocations, which on Flex Consumption share no memory
+# and not reliably an instance. There is no curl version of that to disagree
+# with. See store.py.
+#
+# azure-identity because the workload account has shared access keys disabled,
+# so a connection string or SAS cannot be minted at all. A Function is handed a
+# local token endpoint, so this needs no egress.
+azure-identity
+azure-storage-blob
+azure-storage-queue

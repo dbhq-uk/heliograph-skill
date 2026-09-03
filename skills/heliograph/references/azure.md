@@ -98,6 +98,24 @@ What it does not have is `git`. So this host uses the **pigeonhole**, and blob
 storage behind a private endpoint needs no egress at all. That is why it works
 in a subnet with no route off it, where every other host failed.
 
+### It carries both transports, and the estate picks
+
+A Function App is the one host so far whose endpoint the control node can
+usually reach, because it has a public HTTPS front door *and* sits inside the
+VNet. When that is true the pigeonhole is indirection with no purpose, and
+[intercom](intercom.md) submits the step over HTTPS instead: no storage
+credentials for the operator, no timer interval, a round trip in seconds.
+
+Both ship in the same `function_app.py` and share `run.sh`. Leaving
+`HELIOGRAPH_ACCOUNT` unset leaves intercom off; setting `HELIOGRAPH_SCHEDULE` to
+a date that never comes leaves the pigeonhole off. Running both is fine, and is
+what the reference deployment does.
+
+The trade intercom makes is real and is stated in its own reference: it runs the
+script the caller sends, so the mode header becomes self-declared and the
+function key plus the IP allowlist are the only controls left. **Do not deploy it
+without both.**
+
 ### A step can outlive the invocation
 
 `functionTimeout` in `host.json` is a hard wall. A step that overruns is killed
