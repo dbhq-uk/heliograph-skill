@@ -69,8 +69,16 @@ is lost with it.
 ### A SAS may not exist at all, so this host uses its identity
 
 The pigeonhole was built around a SAS because the host it was written for - a
-VNet-injected container group - has no IMDS, so no token can be fetched at all.
-That reasoning does not carry to a Function.
+VNet-injected container group - was believed to have no IMDS, so no token could
+be fetched at all.
+
+**That belief was wrong, and this document contradicted itself about it until
+2026-09-03.** "Managed identity works in a VNet-injected ACI" below is the
+measured claim - a container group with a user-assigned identity, in a delegated
+subnet, asked IMDS for a token and got HTTP 200 back - and a measurement beats a
+confidently asserted negative. The SAS was never the only option on ACI either.
+
+The reasoning that does carry, and the one that actually forces identity here:
 
 **An estate can disable shared keys outright.** `allowSharedKeyAccess = false`
 on the storage account means there is no key to sign a SAS with, and the
