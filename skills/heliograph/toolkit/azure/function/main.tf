@@ -171,6 +171,12 @@ variable "intercom_allowed_ip_addresses" {
   default     = []
 }
 
+variable "intercom_queue_mode" {
+  description = "Run steps in a queue invocation instead of inline. Off: the listener did not start on Flex Consumption where this was built. See references/intercom.md."
+  type        = bool
+  default     = false
+}
+
 variable "intercom_queue" {
   description = "Queue carrying submitted tasks. The binding is %HELIOGRAPH_QUEUE%, so the app will not index without it."
   type        = string
@@ -270,6 +276,8 @@ resource "azurerm_function_app_flex_consumption" "agent" {
     HELIOGRAPH_ACCOUNT = var.intercom_enabled ? var.storage_account_name : ""
     HELIOGRAPH_QUEUE   = "${var.intercom_prefix}${var.intercom_queue}"
     HELIOGRAPH_PREFIX  = var.intercom_prefix
+
+    HELIOGRAPH_QUEUE_MODE = var.intercom_queue_mode ? "1" : "0"
   }
 
   lifecycle {
@@ -320,5 +328,17 @@ output "intercom" {
 # it cannot make the assignment; make it wherever the account is declared.
 output "required_roles" {
   description = "Data-plane roles the app's identity needs on the storage account."
-  value       = var.intercom_enabled ? "Storage Blob Data Contributor, Storage Queue Data Contributor" : "Storage Blob Data Contributor"
+  value       = var.intercom_queue_mode ? "Storage Blob Data Contributor, Storage Queue Data Contributor" : "Storage Blob Data Contributor"
+}
+
+# THE SETTING THIS MODULE CANNOT STOP THE PROVIDER WRITING. On an account with
+# shared keys disabled, azurerm writes an AzureWebJobsStorage connection string
+# with an EMPTY AccountKey on every update - it cannot read a key, and writes the
+# string anyway. The host prefers it over AzureWebJobsStorage__accountName, fails
+# to authenticate, and cannot reach its key store: every call answers 401 and
+# listkeys returns "Encountered an error (InternalServerError) from host
+# runtime", which reads like a broken runtime rather than a bad setting.
+output "after_every_apply" {
+  description = "Run this after each apply, or the app cannot read its own keys."
+  value       = "az functionapp config appsettings delete -g ${var.resource_group_name} -n ${var.name} --setting-names AzureWebJobsStorage"
 }

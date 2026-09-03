@@ -12,17 +12,29 @@
 #  storage becomes task STATE rather than the transport. The operator never sees
 #  it.
 #
-#  WHY THE WORK RUNS IN A QUEUE INVOCATION AND NEVER IN THE HTTP ONE. Work must
-#  not outlive the invocation that started it. A thread that survives the HTTP
-#  response is not guaranteed to run: Flex Consumption may freeze or recycle the
-#  instance the moment the response is sent, and the task vanishes with no
-#  record it ever existed. A debugging tool that silently loses runs is worse
-#  than one that refuses them.
+#  WORK NEVER OUTLIVES THE INVOCATION THAT STARTED IT. Flex Consumption may
+#  freeze or recycle an instance the moment a response is sent, so a thread left
+#  running past the response is not guaranteed to finish, and the task would
+#  vanish with no record it ever existed. A debugging tool that silently loses
+#  runs is worse than one that refuses them.
 #
-#  So POST executes nothing. It records the task, enqueues the id, and then
-#  waits on the result blob for up to `wait` seconds. That is why "synchronous
-#  by default, asynchronous for long steps" is ONE code path: `wait` decides
-#  only whether the caller stays on the line, not where the work happens.
+#  Work DURING a request is a different thing and is safe: the request holds the
+#  instance alive for its own duration. So by default the step runs inline in
+#  POST /api/run, bounded by `wait`, and the caller gets the log back in the same
+#  response.
+#
+#  THE QUEUE PATH IS OPTIONAL AND OFF BY DEFAULT, set by HELIOGRAPH_QUEUE_MODE=1.
+#  It was the original design and it is better where it works, because a step can
+#  outlive the 230 seconds the Azure front end allows a request. It did not work
+#  on the estate this was built for: the listener never started, with both data
+#  roles granted, a queue private endpoint in place and the host reporting
+#  Running with no errors. Diagnosing further needed telemetry, and Application
+#  Insights ingestion needs egress - which is the one thing these estates do not
+#  have. Inline needs no queue, no queue role and no second private endpoint.
+#
+#  A STEP THAT OUTRUNS `wait` IS KILLED AND ITS PARTIAL LOG RETURNED, status
+#  `timeout`. caplib writes the capture to a file as the step produces it, so
+#  that log is real evidence of how far it got rather than a consolation.
 #
 #  IT SHELLS OUT TO run.sh RATHER THAN REIMPLEMENTING THE CAPTURE, for the same
 #  reason the timer host does: caplib.sh owns timestamping, ANSI stripping and
@@ -87,13 +99,18 @@ ACTION_ENV = ("APPLY", "CONFIRM", "DESTROY", "FORCE", "WRITE")
 # part is never the part that went missing.
 CHUNK = 1024 * 1024
 
+# The statuses that mean "stop polling". `timeout` is one of them: the step was
+# killed and the partial log is the answer, so a caller waiting for `done` would
+# wait forever.
+SETTLED = ("done", "refused", "failed", "timeout")
+
 
 class Refused(Exception):
     """A request that will not run, with the reason the caller should see."""
 
 
 # --- the record ---------------------------------------------------------------
-# status is one of: queued, running, done, refused, failed.
+# status is one of: queued, running, done, refused, failed, timeout.
 #
 # `done` means the step ran to completion and `exit` says how it went. A step
 # that exits non-zero is DONE, not FAILED - it produced a log, and the log is
@@ -145,11 +162,18 @@ def validate(body: object) -> dict:
     }
 
 
-def submit(store, body: object) -> dict:
-    """Record a task and enqueue it. Raises Refused on a bad request."""
+def submit(store, body: object, enqueue: bool = True) -> dict:
+    """Record a task. Raises Refused on a bad request.
+
+    enqueue=False is for inline execution, where the caller runs the task in
+    this same invocation. Enqueuing as well would run the step TWICE - once
+    here and once whenever the worker woke up - and two logs for one question
+    is the failure this tool exists to prevent.
+    """
     task = validate(body)
     store.put_task(task["taskId"], task)
-    store.enqueue(task["taskId"])
+    if enqueue:
+        store.enqueue(task["taskId"])
     return task
 
 
@@ -161,7 +185,7 @@ def await_done(store, task_id: str, deadline: float, sleep=time.sleep) -> dict |
     """
     while True:
         task = store.get_task(task_id)
-        if task and task["status"] in ("done", "refused", "failed"):
+        if task and task["status"] in SETTLED:
             return task
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -184,7 +208,7 @@ def _present(store, task: dict, offset: int = 0) -> dict:
     # The script is not echoed back. The caller sent it and already has it, and
     # a 256 KB script on every poll response is bandwidth spent on nothing.
     out = {k: v for k, v in task.items() if k not in ("script", "env", "wait")}
-    if task["status"] in ("done", "refused", "failed"):
+    if task["status"] in SETTLED:
         chunk, next_offset, total = store.get_log(task["taskId"], offset, CHUNK)
         # errors="replace" because offset is a BYTE position, so a page boundary
         # can land inside a multi-byte character. Replacing one character is the
@@ -223,7 +247,9 @@ def _is_action(script_path: pathlib.Path, env: dict) -> bool:
     return any(key in ACTION_ENV for key in env)
 
 
-def execute(store, task_id: str, workdir: str = "/tmp/heliograph") -> dict:
+def execute(
+    store, task_id: str, workdir: str = "/tmp/heliograph", timeout: float | None = None
+) -> dict:
     """Run one task to completion and store its log. The queue trigger's body."""
     task = store.get_task(task_id)
     if task is None:
@@ -263,14 +289,28 @@ def execute(store, task_id: str, workdir: str = "/tmp/heliograph") -> dict:
     # to the task store instead, which is what the caller is polling.
     env["PUSH"] = "0"
 
-    proc = subprocess.run(
-        ["bash", str(TOOLKIT / "run.sh"), str(script_path)],
-        cwd=str(TOOLKIT),
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    timed_out = False
+    try:
+        proc = subprocess.run(
+            ["bash", str(TOOLKIT / "run.sh"), str(script_path)],
+            cwd=str(TOOLKIT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+        returncode, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
+    except subprocess.TimeoutExpired as expired:
+        # KILLED, BUT NOT LOST. caplib writes the capture to a file as the step
+        # produces it, so the partial log below is real evidence of how far it
+        # got - which is the whole reason this reads the file rather than the
+        # pipe. A step that overran and a step that hung look identical from
+        # outside; the partial log is what tells them apart.
+        timed_out = True
+        returncode = None
+        stdout = (expired.stdout or b"").decode(errors="replace") if isinstance(expired.stdout, bytes) else (expired.stdout or "")
+        stderr = (expired.stderr or b"").decode(errors="replace") if isinstance(expired.stderr, bytes) else (expired.stderr or "")
 
     # run.sh writes <name>-<UTC>.txt into LOG_DIR. If it refused before
     # capturing anything - an undeclared mode, a root account - there is no such
@@ -281,13 +321,17 @@ def execute(store, task_id: str, workdir: str = "/tmp/heliograph") -> dict:
     if produced:
         text = pathlib.Path(produced[-1]).read_text(errors="replace")
     else:
-        text = (proc.stdout or "") + (proc.stderr or "")
+        text = (stdout or "") + (stderr or "")
         if not text:
-            text = f"the step produced no output and no log (exit {proc.returncode})\n"
+            text = f"the step produced no output and no log (exit {returncode})\n"
+
+    if timed_out:
+        text += f"\n*** killed after {timeout}s - this log is what it managed ***\n"
+        return _settle(store, task, "timeout", None, text)
 
     # exit 0 or 7, it ran and it told us what happened: that is `done`. See the
     # note on the record above for why a non-zero step is not `failed`.
-    return _settle(store, task, "done", proc.returncode, text)
+    return _settle(store, task, "done", returncode, text)
 
 
 def _settle(store, task: dict, status: str, exit_code: int | None, log: str) -> dict:

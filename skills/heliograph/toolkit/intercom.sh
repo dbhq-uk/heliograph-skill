@@ -68,10 +68,15 @@ api() {   # api <method> <path> [body-file]
 # names appear once: the contract is in references/intercom.md and this is the
 # only thing that has to agree with it.
 field() {   # field <name> <<< json
+  # `is None` rather than `or ""`, because the truthiness shortcut turned an
+  # exit code of 0 into the empty string - so a step that SUCCEEDED reported
+  # "exit none", which reads like the agent losing the result of the one run
+  # that worked.
   "$PY" -c '
 import json, sys
 try:
-    print(json.load(sys.stdin).get(sys.argv[1], "") or "")
+    value = json.load(sys.stdin).get(sys.argv[1])
+    print("" if value is None else value)
 except Exception:
     pass
 ' "$1"
@@ -138,11 +143,24 @@ PY
 # --- poll, watch, logs --------------------------------------------------------
 
 get_task() {   # get_task <id> [offset]
-  local response code
+  local response code body
   response="$(api GET "/api/task/$1?offset=${2:-0}")"
   code="$(printf '%s' "$response" | tail -1)"
-  [ "$code" = "200" ] || { printf '%s' "$response" | sed '$d' >&2; return 1; }
-  printf '%s' "$response" | sed '$d'
+  body="$(printf '%s' "$response" | sed '$d')"
+  if [ "$code" != "200" ]; then
+    printf 'intercom: HTTP %s from the agent: %s\n' "$code" "$body" >&2
+    return 1
+  fi
+  # NOT JSON IS NOT A LOG. App Service answers "The service is unavailable."
+  # in plain text while an instance is cold or recycling, and without this
+  # check that sentence was written to ops-logs/ as though it were a capture,
+  # and the client exited 0. A file that looks like evidence and is not is
+  # worse than no file: the next reader has no way to tell.
+  if ! printf '%s' "$body" | "$PY" -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
+    printf 'intercom: the agent did not return JSON (HTTP %s): %s\n' "$code" "$body" >&2
+    return 1
+  fi
+  printf '%s' "$body"
 }
 
 cmd_poll() {
@@ -159,7 +177,9 @@ cmd_watch() {
     json="$(get_task "$task_id")" || return 1
     status="$(printf '%s' "$json" | field status)"
     case "$status" in
-      done|refused|failed) finish "$task_id" "$json"; return $? ;;
+      # `timeout` settles too: the step was killed and the partial log IS the
+      # answer, so waiting for `done` would wait for ever.
+      done|refused|failed|timeout) finish "$task_id" "$json"; return $? ;;
     esac
     sleep "${INTERCOM_POLL:-2}"
   done
@@ -168,30 +188,54 @@ cmd_watch() {
 # THE WHOLE LOG, PAGED. `offset` walks it because the agent refuses to truncate:
 # a log that came back short would be a log missing exactly the part worth
 # reading, and there is no way for the reader to tell.
-cmd_logs() {
-  local task_id="${1:?usage: intercom.sh logs <taskId>}" json offset=0 next total
+#
+# It starts from a page the caller ALREADY HAS. The 200 from /api/run carries the
+# first page with it, and re-fetching it was both a wasted round trip and a real
+# failure: the second call could land on an instance that had gone cold, so a run
+# that had already succeeded reported "The service is unavailable."
+pages() {   # pages <id> <first-page-json> <outfile>
+  local task_id="$1" json="$2" out="$3" next total
+  : > "$out"
   while :; do
-    json="$(get_task "$task_id" "$offset")" || return 1
-    printf '%s' "$json" | "$PY" -c 'import json,sys; sys.stdout.write(json.load(sys.stdin).get("log",""))'
+    printf '%s' "$json" | "$PY" -c 'import json,sys; sys.stdout.write(json.load(sys.stdin).get("log",""))' >> "$out"
     next="$(printf '%s' "$json" | field nextOffset)"
     total="$(printf '%s' "$json" | field logBytes)"
     [ -n "$next" ] && [ -n "$total" ] || return 0
     [ "$next" -ge "$total" ] && return 0
-    offset="$next"
+    json="$(get_task "$task_id" "$next")" || return 1
   done
+}
+
+cmd_logs() {
+  local task_id="${1:?usage: intercom.sh logs <taskId>}" json tmp
+  json="$(get_task "$task_id" 0)" || return 1
+  tmp="$(mktemp)"
+  pages "$task_id" "$json" "$tmp" || { rm -f "$tmp"; return 1; }
+  cat "$tmp"; rm -f "$tmp"
 }
 
 # The log is kept as well as printed, in the same place and the same shape run.sh
 # uses. A heliograph log is evidence; scrollback is not.
+#
+# Written to a temp file first and moved only on success, so a failed fetch
+# leaves NO file in ops-logs/ rather than an empty or half one. A file that looks
+# like evidence and is not is worse than no file at all.
 finish() {   # finish <id> <first-page-json>
-  local task_id="$1" json="$2" status exit_code stamp out
+  local task_id="$1" json="$2" status exit_code stamp out tmp
   status="$(printf '%s' "$json" | field status)"
   exit_code="$(printf '%s' "$json" | field exit)"
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 
+  tmp="$(mktemp)"
+  if ! pages "$task_id" "$json" "$tmp"; then
+    rm -f "$tmp"
+    printf 'intercom: %s %s, but its log could not be fetched\n' "$task_id" "$status" >&2
+    return 1
+  fi
+
   mkdir -p "$LOG_DIR"
   out="$LOG_DIR/$(printf '%s' "$json" | field name)-${stamp}.txt"
-  cmd_logs "$task_id" > "$out" || return 1
+  mv "$tmp" "$out"
   cat "$out"
 
   printf '\nintercom: %s %s (exit %s)\n  %s\n' \

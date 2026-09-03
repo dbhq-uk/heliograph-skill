@@ -44,6 +44,7 @@ import os
 import pathlib
 import subprocess
 import time
+import traceback
 
 import azure.functions as func
 
@@ -174,6 +175,30 @@ def _json(body: dict, status: int) -> func.HttpResponse:
     )
 
 
+# AN UNHANDLED EXCEPTION HERE IS A 500 WITH AN EMPTY BODY, and across a gap that
+# is the worst answer there is: it says something went wrong on a machine you
+# cannot log into, and nothing else. This whole skill exists because that
+# situation wastes days.
+#
+# Telemetry is not the answer on this host either. Application Insights ingestion
+# needs egress, and the estates that need a Function agent are exactly the ones
+# with none - wiring it here produced no traces at all, and worse, the SDK hung
+# on an endpoint it could not reach until every request timed out.
+#
+# So the endpoint reports its own failures. The caller already holds a function
+# key and is inside the IP allowlist, and already submits arbitrary shell, so a
+# traceback tells them nothing they could not have learned by asking for it.
+def _failed(exc: BaseException) -> func.HttpResponse:
+    logging.exception("intercom: unhandled")
+    return _json(
+        {
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(),
+        },
+        500,
+    )
+
+
 @app.route(route="run", methods=["POST"], auth_level=func.AuthLevel.FUNCTION)
 async def run(req: func.HttpRequest) -> func.HttpResponse:
     """Submit a step. Answers with the log, or with a task id to poll."""
@@ -182,12 +207,31 @@ async def run(req: func.HttpRequest) -> func.HttpResponse:
     except ValueError:
         return _json({"error": "body must be JSON"}, 400)
 
+    queue_mode = os.environ.get("HELIOGRAPH_QUEUE_MODE", "0") == "1"
+
     try:
-        task = await asyncio.to_thread(intercom.submit, _store(), body)
+        task = await asyncio.to_thread(
+            intercom.submit, _store(), body, enqueue=queue_mode
+        )
     except intercom.Refused as refused:
         return _json({"error": str(refused)}, 400)
+    except Exception as exc:  # noqa: BLE001 - reported, see _failed
+        return _failed(exc)
 
-    logging.info("intercom: queued %s (%s)", task["taskId"], task["name"])
+    logging.info("intercom: accepted %s (%s)", task["taskId"], task["name"])
+
+    # INLINE BY DEFAULT. The step runs here, in this invocation, bounded by
+    # `wait` - which is safe precisely because the request is still open, and is
+    # the opposite of leaving a thread running after the response. See
+    # intercom.py for why the queue path is no longer the default.
+    if not queue_mode:
+        try:
+            settled = await asyncio.to_thread(
+                intercom.execute, _store(), task["taskId"], timeout=task["wait"] or None
+            )
+            return _json(intercom.fetch(_store(), settled["taskId"], 0), 200)
+        except Exception as exc:  # noqa: BLE001 - reported, see _failed
+            return _failed(exc)
 
     # THE WAIT IS HERE AND THE WORK IS NOT. This polls the result blob; the
     # queue trigger below does the running. See intercom.py for why that
@@ -199,6 +243,13 @@ async def run(req: func.HttpRequest) -> func.HttpResponse:
     # that deadlock would present as "every request times out" with nothing in
     # the logs to say why.
     deadline = time.monotonic() + task["wait"]
+    try:
+        return await _wait_for(task, deadline)
+    except Exception as exc:  # noqa: BLE001 - reported, see _failed
+        return _failed(exc)
+
+
+async def _wait_for(task: dict, deadline: float) -> func.HttpResponse:
     while True:
         settled = await asyncio.to_thread(_store().get_task, task["taskId"])
         if settled and settled["status"] in ("done", "refused", "failed"):
@@ -229,7 +280,10 @@ async def task(req: func.HttpRequest) -> func.HttpResponse:
     if offset < 0:
         return _json({"error": "offset must not be negative"}, 400)
 
-    found = await asyncio.to_thread(intercom.fetch, _store(), task_id, offset)
+    try:
+        found = await asyncio.to_thread(intercom.fetch, _store(), task_id, offset)
+    except Exception as exc:  # noqa: BLE001 - reported, see _failed
+        return _failed(exc)
     if found is None:
         return _json({"error": f"no such task: {task_id}"}, 404)
     return _json(found, 200)
