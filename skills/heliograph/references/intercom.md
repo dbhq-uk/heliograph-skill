@@ -40,12 +40,12 @@ It prints the log, keeps a copy under `ops-logs/`, and **exits with the step's o
 
 | command | does |
 |---|---|
-| `run <script> [KEY=VAL ...]` | submit, wait, print the log. Follows a 202 automatically |
+| `run <script> [KEY=VAL ...]` | submit, run, print the log. Follows a 202 automatically in queue mode |
 | `poll <taskId>` | one look: status, exit code, size |
 | `watch <taskId>` | poll until it settles, then print the log |
 | `logs <taskId>` | just the log, paged, to stdout |
 
-`INTERCOM_WAIT` (default 25) is how long `run` stays on the line before falling back to polling. `INTERCOM_DETACH=1` makes it print the task id and return instead. `INTERCOM_POLL` (default 2) is the polling interval.
+`INTERCOM_WAIT` (default 25) is how long the step is given before it is killed, and how long `run` stays on the line. `INTERCOM_DETACH=1` makes it print the task id and return instead. `INTERCOM_POLL` (default 2) is the polling interval.
 
 ## The contract
 
@@ -70,19 +70,22 @@ It prints the log, keeps a copy under `ops-logs/`, and **exits with the step's o
 `wait` is clamped rather than refused because the Azure front end kills an HTTP request at 230 seconds whatever `functionTimeout` says. A caller asking for 600 would get a dropped connection and no task id, which is the one outcome that loses a running step; clamping gives them a task id instead.
 
 ```jsonc
-// 200 - finished inside `wait`
-{"taskId": "7f3a…", "name": "dns-check", "status": "done", "exit": 0,
- "log": "…", "offset": 0, "nextOffset": 4211, "logBytes": 4211}
+// 200 - the normal answer: it ran, here is the log
+{"taskId": "7f3a", "name": "dns-check", "status": "done", "exit": 0,
+ "log": "...", "offset": 0, "nextOffset": 4211, "logBytes": 4211}
 
-// 202 - still running
-{"taskId": "7f3a…", "name": "dns-check", "status": "running", "poll": "/api/task/7f3a…"}
+// 200 - it outran `wait` and was killed. The partial log is still here
+{"taskId": "7f3a", "name": "dns-check", "status": "timeout", "exit": null, "log": "..."}
+
+// 202 - QUEUE MODE ONLY: still running, poll for it
+{"taskId": "7f3a", "name": "dns-check", "status": "running", "poll": "/api/task/7f3a"}
 ```
 
 ### `GET /api/task/{taskId}?offset=N`
 
-The same record. `status` is one of `queued`, `running`, `done`, `refused`, `failed`.
+The same record. `status` is one of `queued`, `running`, `done`, `refused`, `failed`, `timeout`.
 
-**A step that exits non-zero is `done`, not `failed`.** It produced a log, and the log is the deliverable. `failed` means the agent could not run the step at all, which needs a different reaction. `refused` means the action gate stopped it before it ran.
+**A step that exits non-zero is `done`, not `failed`.** It produced a log, and the log is the deliverable. `failed` means the agent could not run the step at all, which needs a different reaction. `refused` means the action gate stopped it before it ran, and `timeout` that it was killed at `wait` with a partial log.
 
 **Never truncate**, so a large log is paged rather than cut: `offset` returns bytes from that position and `nextOffset` says where to ask next. When `nextOffset` reaches `logBytes` the caller has all of it. A log that came back short would be a log missing exactly the part worth reading, with no way for the reader to tell.
 
@@ -91,19 +94,26 @@ The submitted script is not echoed back. The caller sent it and already has it.
 ## How it works
 
 ```
-POST /api/run ──▶ write tasks/<id>.json ──▶ enqueue id ──▶ poll blob up to `wait`s
-                                              │                     │
-                                     queue trigger:                 ├─ settled  ─▶ 200 + log
-                                     run.sh <script>                └─ not yet  ─▶ 202 + taskId
-                                     write logs/<id>.txt                              │
-                                     write tasks/<id>.json             GET /api/task/<id> ◀┘
+POST /api/run ──▶ write tasks/<id>.json ──▶ run.sh <script>, bounded by `wait`
+                                                   │
+                                                   ├─ finished ─▶ 200 + log
+                                                   └─ overran  ─▶ 200 + partial log,
+                                                                  status: timeout
 ```
 
-**The POST executes nothing.** Work must not outlive the invocation that started it: Flex Consumption may freeze or recycle an instance the moment a response is sent, and a background thread would take the task with it, leaving no record it ever existed. So the HTTP call records the task and *waits on the result blob*, while a queue-triggered function does the work in its own invocation with its own timeout budget.
+**Work never outlives the invocation that started it.** Flex Consumption may freeze or recycle an instance the moment a response is sent, so a thread left running past the response is not guaranteed to finish and the task would vanish with no record it ever existed.
 
-That is why "synchronous by default, asynchronous for long steps" is one code path rather than two. `wait` decides only whether the caller stays on the line.
+Work *during* a request is a different thing and is safe: the request holds the instance alive for its own duration. So **by default the step runs inline in `POST /api/run`**, bounded by `wait`, and the log comes back in the same response.
 
-The queue trigger writes the script to `/tmp/heliograph/<taskId>/<name>.sh`, `chmod 0700`, and runs `run.sh` against that path with `LOG_DIR` set and `PUSH=0`. Timestamping, ANSI stripping and redaction are `caplib.sh`'s, unchanged - there is no second capture implementation here.
+A step that outruns `wait` is killed and its **partial log returned** with `status: timeout`. caplib writes the capture to a file as the step produces it, so that log is real evidence of how far it got - which is what tells a step that overran apart from one that hung producing nothing.
+
+### The queue path, which is optional and off
+
+`HELIOGRAPH_QUEUE_MODE=1` restores the original design: POST enqueues and polls the result blob, a queue-triggered function does the work in its own invocation, and a step that outlives the request returns `202` with a task id to poll. It is better **where it works**, because a step can then outlast the 230 seconds the Azure front end allows a request.
+
+It did not work on the estate this was built for. The listener never started: both data roles granted, a queue private endpoint in place, the queue message visible and unconsumed, and the host reporting `Running` with no errors. Diagnosing further needed telemetry, and Application Insights ingestion needs egress - the one thing these estates do not have. Inline needs no queue, no queue role and no second private endpoint, so it is the default.
+
+Either way the script is written to `/tmp/heliograph/<taskId>/<name>.sh`, `chmod 0700`, and `run.sh` is called against that path with `LOG_DIR` set and `PUSH=0`. Timestamping, ANSI stripping and redaction are `caplib.sh`'s, unchanged - there is no second capture implementation here.
 
 `run.sh` grew one arm for this: **a `$STEP` that names an existing file is that file**. A name in the step table always wins, so nothing can be shadowed, and the mode gate is untouched. It is useful anywhere, not only here - `./run.sh ./probe.sh` now works on any host.
 
@@ -117,6 +127,7 @@ On the Function App:
 | `HELIOGRAPH_QUEUE` | the queue name. The binding is `%HELIOGRAPH_QUEUE%`, so **the app will not index without it** - the timer trigger goes down with it |
 | `HELIOGRAPH_PREFIX` | container and queue prefix, for a drop sharing an account |
 | `HELIOGRAPH_ALLOW_ACTIONS` | `1` permits a step that changes state. Default `0` |
+| `HELIOGRAPH_QUEUE_MODE` | `1` runs steps in a queue invocation instead of inline. Default `0` |
 | `AzureWebJobsStorage__accountName` | identity-based host storage, and the queue trigger's connection |
 
 The identity needs **Storage Blob Data Contributor** and **Storage Queue Data Contributor** on the account. Without the queue role the app indexes, the routes answer, and nothing ever runs - which looks like a hung step rather than a missing grant.
@@ -134,6 +145,19 @@ az functionapp deployment source config-zip -g <rg> -n <app> --src /tmp/heliogra
 
 ## Limits
 
+- **A step is bounded by `wait`, and `wait` is bounded by 200 seconds.** Inline execution cannot outlast the request. A longer step needs `HELIOGRAPH_QUEUE_MODE=1` and a working queue listener.
 - **No cancel.** The pigeonhole has one; intercom will not until something wants it.
-- **No streaming while a step runs.** `offset` pages a settled log; the log blob is written once at the end, so a running step shows `status: running` and nothing else. Watching a slow probe live is a separate change.
+- **No streaming while a step runs.** `offset` pages a settled log; the log blob is written once at the end. Watching a slow probe live is a separate change.
 - **One instance.** `maximum_instance_count = 1` is a correctness bound: a heliograph log's value is that it says what *one* machine saw.
+
+## Four traps this cost an afternoon to find
+
+Every one of these presents as something other than what it is.
+
+**`az functionapp deployment source config-zip` triggers a remote Oryx build**, which fetches the Python SDK list from an external endpoint. With no egress that returns nothing and the deploy dies inside Oryx's XML parser - `Value cannot be null. (Parameter 'node')`, which reads like a corrupt package. Deploy through OneDeploy with the build off instead, which is what the `Deploying` section above does. The dependencies are already vendored; there is nothing to build.
+
+**The azurerm provider writes an `AzureWebJobsStorage` connection string with an EMPTY `AccountKey`** whenever the app is updated, even with `storage_authentication_type = "SystemAssignedIdentity"`. It cannot read a key, because the account has shared keys disabled - so it writes the string anyway with nothing in that field. The host then prefers it over `AzureWebJobsStorage__accountName`, fails to authenticate, and cannot reach its key store. Every call answers 401, and `listkeys` returns `Encountered an error (InternalServerError) from host runtime` - which reads like a broken runtime. **Delete that setting after every apply.**
+
+**A storage private endpoint is per sub-resource.** A `blob` endpoint does nothing for `queue`. In queue mode the symptom is a POST that never returns at all while the task blob sits at `status: queued`: the blob write succeeded and the enqueue is hanging on a public address routed to a firewall. Indistinguishable from a busy worker.
+
+**Flex Consumption scales to zero, and this package carries the Azure SDKs.** A cold start outruns the front end, which answers `The service is unavailable.` **in plain text, not JSON**. Set one always-ready instance. `intercom.sh` now refuses a non-JSON body rather than writing that sentence into `ops-logs/` as though it were a capture.

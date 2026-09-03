@@ -204,6 +204,29 @@ class Execution(unittest.TestCase):
         self.assertIn("declares no mode", log)
         self.assertNotIn("no header here", log)
 
+    def test_a_step_that_outruns_its_deadline_is_killed_with_its_partial_log(self):
+        # THE POINT OF THIS ONE. A killed step must still hand back what it
+        # managed - caplib writes the capture to a file as it goes, so the
+        # partial log is evidence of how far it got. Losing it would make a step
+        # that hung indistinguishable from a step that produced nothing.
+        task = intercom.submit(self.store, body(
+            script="#!/usr/bin/env bash\n# heliograph-mode: read-only\n"
+                   "echo before the wait\nsleep 30\necho after the wait\n"))
+        settled = intercom.execute(
+            self.store, task["taskId"], workdir=self.tmp.name, timeout=3)
+        self.assertEqual(settled["status"], "timeout")
+        log = self.store.logs[settled["taskId"]].decode()
+        self.assertIn("before the wait", log)
+        self.assertNotIn("after the wait", log)
+        self.assertIn("killed after", log)
+
+    def test_submit_can_skip_the_queue_for_inline_execution(self):
+        # Enqueuing as well would run the step twice, and two logs for one
+        # question is the failure this tool exists to prevent.
+        task = intercom.submit(self.store, body(), enqueue=False)
+        self.assertEqual(self.store.queue, [])
+        self.assertIsNotNone(self.store.get_task(task["taskId"]))
+
     def test_an_unknown_task_is_reported_not_raised(self):
         settled = intercom.execute(self.store, "nosuchtask", workdir=self.tmp.name)
         self.assertEqual(settled["status"], "failed")
