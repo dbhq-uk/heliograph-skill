@@ -111,7 +111,30 @@ A step that outruns `wait` is killed and its **partial log returned** with `stat
 
 `HELIOGRAPH_QUEUE_MODE=1` restores the original design: POST enqueues and polls the result blob, a queue-triggered function does the work in its own invocation, and a step that outlives the request returns `202` with a task id to poll. It is better **where it works**, because a step can then outlast the 230 seconds the Azure front end allows a request.
 
-It did not work on the estate this was built for. The listener never started: both data roles granted, a queue private endpoint in place, the queue message visible and unconsumed, and the host reporting `Running` with no errors. Diagnosing further needed telemetry, and Application Insights ingestion needs egress - the one thing these estates do not have. Inline needs no queue, no queue role and no second private endpoint, so it is the default.
+It did not work on the estate this was built for, and **the cause is now known** - the first account of it here was wrong, and said telemetry was unavailable. It was not. There are two faults, and only the second is fatal.
+
+**One: the queue trigger would not index.** `AzureWebJobsStorage__accountName` is enough for blob, so the key store works and the HTTP routes work, but the queue extension cannot build its client from it:
+
+```
+The 'worker' function is in error: Error indexing method 'Functions.worker'.
+Microsoft.Extensions.Azure: Unable to find matching constructor while trying
+to create an instance of QueueServiceClient
+```
+
+Fixed by naming the endpoint: `AzureWebJobsStorage__queueServiceUri`. Add `__blobServiceUri` beside it. Do **not** add a table URI unless a table private endpoint exists, or you build in a hang.
+
+**Two, and this one has no fix in the app: `SyncTriggers` cannot complete without egress.**
+
+```
+SyncTriggers operation failed.
+The request was canceled due to the configured HttpClient.Timeout of 100 seconds elapsing.
+```
+
+SyncTriggers is how the platform tells the **scale controller** which triggers a Flex Consumption app has. It is an outbound call. In a subnet whose default route goes to a firewall with no policy for it, it times out - so the scale controller never learns there is a queue trigger, and nothing ever polls the queue. Messages accumulate while the host reports `Running`, the worker shows as registered, and every HTTP call succeeds.
+
+HTTP triggers are unaffected because the front end routes straight to an always-ready instance without consulting the scale controller. That asymmetry is the whole reason inline works where the queue does not.
+
+So on an estate with no egress, use the default. Queue mode needs a firewall policy for the platform's own control plane, not just for your dependencies.
 
 Either way the script is written to `/tmp/heliograph/<taskId>/<name>.sh`, `chmod 0700`, and `run.sh` is called against that path with `LOG_DIR` set and `PUSH=0`. Timestamping, ANSI stripping and redaction are `caplib.sh`'s, unchanged - there is no second capture implementation here.
 
@@ -174,3 +197,13 @@ The host tolerates the empty value and falls back to `__accountName`. **It costs
 **A storage private endpoint is per sub-resource.** A `blob` endpoint does nothing for `queue`. In queue mode the symptom is a POST that never returns at all while the task blob sits at `status: queued`: the blob write succeeded and the enqueue is hanging on a public address routed to a firewall. Indistinguishable from a busy worker.
 
 **Flex Consumption scales to zero, and this package carries the Azure SDKs.** A cold start outruns the front end, which answers `The service is unavailable.` **in plain text, not JSON**. Set one always-ready instance. `intercom.sh` now refuses a non-JSON body rather than writing that sentence into `ops-logs/` as though it were a capture.
+
+**Telemetry is probably available, and assuming otherwise cost real time.** An earlier version of this page said Application Insights ingestion needs egress and was therefore unusable here. That was wrong. Where the estate has an Azure Monitor Private Link Scope the ingestion endpoint resolves to a **private** address and answers in milliseconds - measured at `10.100.3.26`, 21ms, in the same subnet where every public endpoint times out. The apparent failure was the broken `AzureWebJobsStorage` above, diagnosed while telemetry was wired and blamed on telemetry.
+
+**Wire it before diagnosing anything else.** Both queue faults above were invisible at the API, invisible in `/admin/host/status`, and named exactly once each in `traces`. Set `APPLICATIONINSIGHTS_CONNECTION_STRING` and query:
+
+```kusto
+union traces, exceptions
+| where timestamp > ago(30m)
+| where message has_any ('indexing','SyncTriggers','QueueServiceClient')
+```

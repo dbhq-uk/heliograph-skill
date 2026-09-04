@@ -171,8 +171,20 @@ variable "intercom_allowed_ip_addresses" {
   default     = []
 }
 
+# OFF, AND ON AN ESTATE WITH NO EGRESS IT CANNOT WORK. SyncTriggers is how the
+# platform tells the SCALE CONTROLLER which triggers this app has, and it is an
+# outbound call. Where the subnet's default route goes to a firewall with no
+# policy for it, SyncTriggers times out after 100 seconds, the scale controller
+# never learns there is a queue trigger, and nothing polls the queue - while the
+# host reports Running, the worker shows as registered, and every HTTP call
+# succeeds. HTTP triggers are unaffected because the front end routes straight to
+# an always-ready instance without consulting the scale controller.
+#
+# Turning this on also needs AzureWebJobsStorage__queueServiceUri: the queue
+# extension cannot build a QueueServiceClient from __accountName alone, and fails
+# to INDEX rather than to run.
 variable "intercom_queue_mode" {
-  description = "Run steps in a queue invocation instead of inline. Off: the listener did not start on Flex Consumption where this was built. See references/intercom.md."
+  description = "Run steps in a queue invocation instead of inline. Needs egress for SyncTriggers, and __queueServiceUri. See references/intercom.md."
   type        = bool
   default     = false
 }
@@ -270,6 +282,11 @@ resource "azurerm_function_app_flex_consumption" "agent" {
     # had the provider write the broken string straight back. The declaration
     # only works while it is live.
     AzureWebJobsStorage = ""
+
+    # THE QUEUE EXTENSION CANNOT BUILD ITS CLIENT FROM __accountName ALONE. Set
+    # only when queue mode is on: naming an endpoint the subnet cannot reach is
+    # how a hang gets built in for later. No table URI for the same reason.
+    AzureWebJobsStorage__queueServiceUri = var.intercom_queue_mode ? "https://${var.storage_account_name}.queue.core.windows.net" : ""
 
     PIGEONHOLE_ACCOUNT  = var.pigeonhole_account
     PIGEONHOLE_SAS      = var.pigeonhole_sas
