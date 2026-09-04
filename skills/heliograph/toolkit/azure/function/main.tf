@@ -148,6 +148,24 @@ variable "tags" {
   default     = {}
 }
 
+variable "always_ready_instances" {
+  description = "Warm instances. 1 for intercom, because a cold start outruns the HTTP front end. 0 is right for a pigeonhole-only agent."
+  type        = number
+  default     = 0
+}
+
+# WIRE THIS BEFORE DIAGNOSING ANYTHING ELSE ON THIS HOST. Two faults that cost an
+# afternoon were invisible at the API, invisible in /admin/host/status, and named
+# exactly once each in `traces`. Ingestion is often reachable even where nothing
+# else is: an estate with an Azure Monitor Private Link Scope resolves it to a
+# PRIVATE address, so "there is no egress" is not a reason to assume no telemetry.
+variable "application_insights_connection_string" {
+  description = "Application Insights connection string. Empty disables telemetry, which makes this host very hard to debug."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 # --- intercom: the HTTP transport ---------------------------------------------
 # Off unless asked for. See references/intercom.md before turning it on: it runs
 # the script the caller sends, so the `heliograph-mode:` header becomes a claim
@@ -224,6 +242,24 @@ resource "azurerm_function_app_flex_consumption" "agent" {
 
   runtime_name    = "python"
   runtime_version = "3.12"
+
+  # ONE INSTANCE KEPT WARM, and on the intercom path this is not a performance
+  # tuning. Flex Consumption scales to zero, and this package carries the Azure
+  # SDKs, so a cold start outruns what the App Service front end will wait for:
+  # the caller gets "The service is unavailable." in PLAIN TEXT, not JSON, and it
+  # reads as the agent being broken rather than asleep. A debugging tool that is
+  # unreachable exactly when you reach for it is worthless.
+  #
+  # Zero is correct for a pigeonhole-only deployment, where nothing calls in.
+  dynamic "always_ready" {
+    for_each = var.always_ready_instances > 0 ? [1] : []
+    content {
+      # "http" is the group name the platform uses for HTTP-triggered functions.
+      # It is not a label of your choosing.
+      name           = "http"
+      instance_count = var.always_ready_instances
+    }
+  }
 
   # NOTHING CONNECTS TO THE AGENT when it runs the pigeonhole: it makes outbound
   # connections only, so the public endpoint is closed rather than left open and
@@ -317,6 +353,8 @@ resource "azurerm_function_app_flex_consumption" "agent" {
     HELIOGRAPH_PREFIX  = var.intercom_prefix
 
     HELIOGRAPH_QUEUE_MODE = var.intercom_queue_mode ? "1" : "0"
+
+    APPLICATIONINSIGHTS_CONNECTION_STRING = var.application_insights_connection_string
   }
 
   lifecycle {
@@ -331,6 +369,13 @@ resource "azurerm_function_app_flex_consumption" "agent" {
   }
 
   tags = var.tags
+}
+
+# THE ROLE ASSIGNMENTS CANNOT BE MADE HERE, because this module does not own the
+# storage account. This is what to grant them to, so the caller can.
+output "principal_id" {
+  description = "The app's managed identity. Needs Storage Blob Data Contributor, and Storage Queue Data Contributor in queue mode."
+  value       = azurerm_function_app_flex_consumption.agent.identity[0].principal_id
 }
 
 output "name" {
