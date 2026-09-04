@@ -3,7 +3,7 @@
 #  intercom.sh - submit a step to a reachable agent, and read its log
 # =============================================================================
 #
-#     export INTERCOM_URL=https://func-heliograph-eun-dev-01.azurewebsites.net
+#     export INTERCOM_URL=https://<your-function-app>.azurewebsites.net
 #     export INTERCOM_KEY=<the function key>
 #
 #     ./intercom.sh run steps/net-probe.sh HOSTS="sql.example" PORTS=1433

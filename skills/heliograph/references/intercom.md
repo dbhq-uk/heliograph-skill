@@ -30,7 +30,7 @@ A leaked key is useless off-network. An on-network caller still needs the key. E
 ## Using it
 
 ```bash
-export INTERCOM_URL=https://func-heliograph-eun-dev-01.azurewebsites.net
+export INTERCOM_URL=https://<your-function-app>.azurewebsites.net
 export INTERCOM_KEY=$(az functionapp keys list -g <rg> -n <app> --query functionKeys.default -o tsv)
 
 ${CLAUDE_SKILL_DIR}/toolkit/intercom.sh run steps/net-probe.sh HOSTS="sql.example db.example" PORTS=1433
@@ -164,6 +164,77 @@ ${CLAUDE_SKILL_DIR}/toolkit/azure/function/build.sh /tmp/heliograph-function.zip
 az functionapp deployment source config-zip -g <rg> -n <app> --src /tmp/heliograph-function.zip
 ```
 
+### A complete deployment
+
+The module is bring-your-own: it creates the plan and the app, and nothing else. These are the pieces around it, and every one of them was a fault before it was a line of HCL. Names are placeholders.
+
+```hcl
+module "agent" {
+  source              = "${path.module}/toolkit/azure/function"
+  name                = local.app_name
+  location            = local.location
+  resource_group_name = local.rg
+  storage_account_name = local.storage_account
+  subnet_id            = local.integration_subnet_id   # delegated to Microsoft.App/environments
+
+  intercom_enabled              = true
+  intercom_allowed_ip_addresses = ["203.0.113.10/32"]  # CIDR: a bare address is refused
+  always_ready_instances        = 1                    # or the first call gets plain-text 503
+
+  application_insights_connection_string = data.azurerm_application_insights.this.connection_string
+}
+
+# The task store. Created on first use too, but declaring it means a plan says so.
+resource "azurerm_storage_container" "tasks" {
+  name                  = "heliograph-tasks"
+  storage_account_id    = data.azurerm_storage_account.this.id
+  container_access_type = "private"
+}
+
+# BOTH ROLES, and the second one's absence fails silently: with blob alone the
+# app starts, indexes, and answers /api/run while the queue send fails where
+# nobody is looking.
+resource "azurerm_role_assignment" "blob" {
+  scope                = data.azurerm_storage_account.this.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = module.agent.principal_id
+}
+
+resource "azurerm_role_assignment" "queue" {
+  scope                = data.azurerm_storage_account.this.id
+  role_definition_name = "Storage Queue Data Contributor"
+  principal_id         = module.agent.principal_id
+}
+```
+
+**A storage private endpoint is per sub-resource.** If the account has one for `blob`, that does nothing for `queue`. Add a second, or the enqueue hangs on a public address:
+
+```hcl
+resource "azurerm_private_endpoint" "queue" {
+  name                = "pep-<account>-queue"
+  resource_group_name = local.rg
+  location            = local.location
+  subnet_id           = local.private_endpoint_subnet_id
+
+  private_service_connection {
+    name                           = "psc-<account>-queue"
+    private_connection_resource_id = data.azurerm_storage_account.this.id
+    subresource_names              = ["queue"]
+    is_manual_connection           = false
+  }
+
+  # WHERE AZURE POLICY WRITES THE DNS RECORD, IT OWNS IT. Without this terraform
+  # proposes deleting a zone group it did not declare on every plan, so each
+  # apply removes the record for policy to recreate - a race with the agent's own
+  # name resolution in the middle of it.
+  lifecycle {
+    ignore_changes = [private_dns_zone_group]
+  }
+}
+```
+
+### Deploying the code
+
 `build.sh` flattens the toolkit into the package root, so `function_app.py`, `run.sh` and `caplib.sh` end up beside each other, and vendors the dependencies into `.python_packages/lib/site-packages`. **Dependencies are vendored rather than built remotely** because a remote build needs the platform to reach a package index, and this host exists for estates where outbound is the thing that does not work.
 
 ## Limits
@@ -198,7 +269,7 @@ The host tolerates the empty value and falls back to `__accountName`. **It costs
 
 **Flex Consumption scales to zero, and this package carries the Azure SDKs.** A cold start outruns the front end, which answers `The service is unavailable.` **in plain text, not JSON**. Set one always-ready instance. `intercom.sh` now refuses a non-JSON body rather than writing that sentence into `ops-logs/` as though it were a capture.
 
-**Telemetry is probably available, and assuming otherwise cost real time.** An earlier version of this page said Application Insights ingestion needs egress and was therefore unusable here. That was wrong. Where the estate has an Azure Monitor Private Link Scope the ingestion endpoint resolves to a **private** address and answers in milliseconds - measured at `10.100.3.26`, 21ms, in the same subnet where every public endpoint times out. The apparent failure was the broken `AzureWebJobsStorage` above, diagnosed while telemetry was wired and blamed on telemetry.
+**Telemetry is probably available, and assuming otherwise cost real time.** An earlier version of this page said Application Insights ingestion needs egress and was therefore unusable here. That was wrong. Where the estate has an Azure Monitor Private Link Scope the ingestion endpoint resolves to a **private** address and answers in milliseconds - measured on one estate at a 10.x address, answering in 21ms, in the same subnet where every public endpoint timed out. The apparent failure was the broken `AzureWebJobsStorage` above, diagnosed while telemetry was wired and blamed on telemetry.
 
 **Wire it before diagnosing anything else.** Both queue faults above were invisible at the API, invisible in `/admin/host/status`, and named exactly once each in `traces`. Set `APPLICATIONINSIGHTS_CONNECTION_STRING` and query:
 
