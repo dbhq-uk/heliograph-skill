@@ -220,4 +220,37 @@ else
   t_skip "p5/p6: driver does not support gates"
 fi
 
+# --- property 7: redaction is wired INTO the capture -------------------------
+# test-redact.sh already exercises cap_redact directly and in more depth. This
+# asserts something different and weaker on purpose: that redaction is actually
+# on the capture path of this implementation. A correct redactor that a second
+# implementation forgets to call is exactly the drift this suite exists for,
+# and a unit test of the function cannot see it.
+#
+# Over-masking is asserted too. These logs are the only evidence anybody gets,
+# and a redactor that eats ordinary output is its own failure.
+if drv_supports capture; then
+  cat > "$WORK/leaky.sh" <<'EOS'
+#!/usr/bin/env bash
+echo "password=hunter2correct"
+echo "Authorization: Bearer eyJleUJTRUNSRVQi"
+echo "cloning https://ci-user:glpat-LEAKEDTOKENVALUE@git.invalid/x.git"
+echo "listening on port 8443 and exit code 0"
+EOS
+  chmod +x "$WORK/leaky.sh"
+  drv_capture "$WORK/p7.log" "$WORK/leaky.sh" >/dev/null 2>&1
+  p7_body="$(cat "$WORK/p7.log" 2>/dev/null)"
+
+  assert_eq "p7: a password= value does not survive the capture" "0" \
+    "$(printf '%s\n' "$p7_body" | grep -c 'hunter2correct')"
+  assert_eq "p7: a Bearer token does not survive the capture" "0" \
+    "$(printf '%s\n' "$p7_body" | grep -c 'eyJleUJTRUNSRVQi')"
+  assert_eq "p7: a credential in a URL does not survive the capture" "0" \
+    "$(printf '%s\n' "$p7_body" | grep -c 'glpat-LEAKEDTOKENVALUE')"
+  assert_contains "p7: ordinary output is NOT masked, so evidence survives" \
+    "listening on port 8443 and exit code 0" "$p7_body"
+else
+  t_skip "p7: driver does not support capture"
+fi
+
 t_summary
