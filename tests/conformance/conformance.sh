@@ -158,4 +158,66 @@ else
   t_skip "p4: driver does not support capture"
 fi
 
+# --- properties 5 and 6: the gates fail closed -------------------------------
+# A step that declares nothing does not run at all, and nothing runs as root.
+# Both are checked here rather than only in test-step-mode.sh and
+# test-root-refusal.sh because they must hold for EVERY implementation and
+# every transport, not only for the one those tests happen to exercise.
+#
+# The steps are given to the runner BY PATH rather than registered in its case
+# table. The path form exercises the same gate, and patching a case table from
+# a test would couple this suite to one implementation's internals, which is
+# exactly what the driver split exists to prevent.
+if drv_supports gates; then
+  P5="$WORK/repo"
+  if drv_bootstrap "$P5"; then
+
+    cat > "$P5/steps/undeclared.sh" <<'EOS'
+#!/usr/bin/env bash
+echo this step declares nothing
+EOS
+    cat > "$P5/steps/declared.sh" <<'EOS'
+#!/usr/bin/env bash
+# heliograph-mode: read-only
+echo this step declares itself and measures nothing
+EOS
+    chmod +x "$P5/steps/undeclared.sh" "$P5/steps/declared.sh"
+
+    p5_before="$(find "$P5/ops-logs" -name '*.txt' 2>/dev/null | wc -l | tr -d ' ')"
+    drv_step "$P5" steps/undeclared.sh
+    assert_eq "p5: an undeclared step exits 3" "3" "$?"
+    p5_after="$(find "$P5/ops-logs" -name '*.txt' 2>/dev/null | wc -l | tr -d ' ')"
+    assert_eq "p5: an undeclared step writes no log at all" \
+      "$p5_before" "$p5_after"
+
+    # The control: the same runner, the same path form, a step that DOES
+    # declare itself. Without this, p5 would pass just as well if the runner
+    # refused everything.
+    drv_step "$P5" steps/declared.sh
+    assert_eq "p5: a declared step runs, so the gate is not refusing everything" \
+      "0" "$?"
+
+    # A fake `id` answering 0 to `id -u`, deferring to the real one otherwise.
+    # caplib's cap_refuse_root calls `id -u` rather than reading $EUID
+    # specifically so this is possible without being root.
+    mkdir -p "$WORK/fakebin"
+    p6_real_id="$(command -v id)"
+    cat > "$WORK/fakebin/id" <<EOF
+#!/usr/bin/env bash
+[ "\$*" = "-u" ] && { echo 0; exit 0; }
+exec "$p6_real_id" "\$@"
+EOF
+    chmod +x "$WORK/fakebin/id"
+
+    ( cd "$P5" && PATH="$WORK/fakebin:$PATH" PUSH=0 ./run.sh steps/declared.sh \
+    ) >/dev/null 2>&1
+    assert_eq "p6: the same step refuses with 5 when the account is root" \
+      "5" "$?"
+  else
+    t_skip "p5/p6: could not bootstrap a transport repo"
+  fi
+else
+  t_skip "p5/p6: driver does not support gates"
+fi
+
 t_summary
