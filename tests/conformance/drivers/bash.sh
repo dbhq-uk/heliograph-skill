@@ -49,3 +49,18 @@ drv_step() {
   local dir="$1" step="$2"
   ( cd "$dir" && PUSH=0 ./run.sh "$step" ) >/dev/null 2>&1
 }
+
+# Start a capture in its own process group, so a cancel can signal the whole
+# group the way agent.sh does rather than only the wrapper. Echoes the pid,
+# which is also the process group id because setsid made it a leader.
+drv_capture_bg() {
+  local out="$1" script="$2"
+  setsid bash -c '
+    # shellcheck disable=SC1091
+    . "$1/caplib.sh"
+    cap_header "$2" "conformance-cancel"
+    cap_run "$2" "$3"
+    cap_footer "$2" $?
+  ' _ "$_D_TOOLKIT" "$out" "$script" >/dev/null 2>&1 &
+  printf '%s' "$!"
+}

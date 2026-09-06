@@ -253,4 +253,44 @@ else
   t_skip "p7: driver does not support capture"
 fi
 
+# --- property 8: a cancelled run keeps what it captured ----------------------
+# A log that stops mid-sentence is still evidence, and usually the evidence you
+# wanted: the last line names the probe that was in flight. Discarding a
+# partial log on cancel would throw away the only thing an hour-long wrong run
+# produced.
+#
+# The exit-130 half of this property belongs to the station loop, which
+# publishes state `cancelled` with exit 130. That needs a transport driver to
+# observe a published status and is asserted in A6. This is the half that
+# belongs to the capture.
+if drv_supports cancel; then
+  cat > "$WORK/slow.sh" <<'EOS'
+#!/usr/bin/env bash
+echo starting the long probe
+for i in 1 2 3 4 5 6 7 8 9 10; do echo "probe $i"; sleep 1; done
+echo finished
+EOS
+  chmod +x "$WORK/slow.sh"
+
+  p8_pid="$(drv_capture_bg "$WORK/p8.log" "$WORK/slow.sh")"
+  sleep 3
+  kill -TERM -- "-$p8_pid" 2>/dev/null || kill -TERM "$p8_pid" 2>/dev/null
+  sleep 2
+
+  p8_body="$(cat "$WORK/p8.log" 2>/dev/null)"
+  assert_contains "p8: the partial log survives a cancel" \
+    "starting the long probe" "$p8_body"
+  assert_eq "p8: the run did NOT reach its end, so this was a real cancel" "0" \
+    "$(printf '%s\n' "$p8_body" | grep -c '| finished$')"
+
+  p8_lines="$(printf '%s\n' "$p8_body" | grep -c ' | ')"
+  if [ "$p8_lines" -ge 2 ]; then
+    t_ok "p8: the partial log holds the ${p8_lines} lines captured before the cancel"
+  else
+    t_no "p8: expected at least 2 captured lines, got $p8_lines"
+  fi
+else
+  t_skip "p8: driver does not support cancel"
+fi
+
 t_summary
