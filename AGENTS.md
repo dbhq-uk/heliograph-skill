@@ -176,6 +176,19 @@ jq empty .claude-plugin/plugin.json
 ./tests/run-tests.sh
 ```
 
+`tests/conformance/` is the executable form of the capture contract, run
+against one driver per implementation. It asserts properties and never
+internals: no file in it may name `caplib.sh`, `run.sh` or any path inside the
+toolkit, because the moment it does it stops being a specification and becomes
+a second copy of one implementation. When you add an implementation of the
+capture, add a driver, not a new set of tests.
+
+`drivers/mutant.sh` is deliberately broken and the suite asserts that it
+**fails**. That half is not ceremony: nothing else here can tell a suite that
+checks the capture apart from a suite that has quietly stopped checking
+anything, because both report a clean run. Do not fix the mutant, and do not
+weaken a property to make a driver pass.
+
 A `windows` job runs the toolkit on `windows-latest`, and it is not decoration:
 `agent.ps1`'s registry lookup for bash, `ps_step` against Windows PowerShell 5.1
 rather than pwsh 7, the line-ending probe's CR-tolerant branch and
