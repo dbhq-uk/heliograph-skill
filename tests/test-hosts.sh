@@ -118,8 +118,22 @@ while IFS= read -r line; do
       printf '     %s\n' "$line"
     fi
   done
-  # A proven row with neither a test file nor a live deployment is an assertion
-  # with nothing behind it.
+  # A CI workflow step is evidence too, and the rule originally missed that -
+  # it rejected the Windows scheduled task, which is proven by a step in
+  # validate.yml rather than by a file under tests/. Caught by its own gate,
+  # which is the outcome to want.
+  if printf '%s\n' "$line" | grep -q 'the Windows runner'; then
+    if grep -q "registers, reports and removes a scheduled task" \
+         "$HERE/../.github/workflows/validate.yml" 2>/dev/null; then
+      t_ok "the Windows row cites a CI step that is still in validate.yml"
+    else
+      t_no "the Windows row cites a CI step that no longer exists in validate.yml"
+    fi
+    continue
+  fi
+
+  # A proven row with no test file, no CI step and no live deployment is an
+  # assertion with nothing behind it.
   if ! printf '%s\n' "$line" | grep -qE 'tests/|deployed live'; then
     t_no "a row claims proven with no evidence"
     printf '     %s\n' "$line"

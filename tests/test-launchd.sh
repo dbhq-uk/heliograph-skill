@@ -98,32 +98,56 @@ else
 fi
 
 # --- it is actually running ---------------------------------------------------
+# Asked fresh each time rather than captured once and checked later. The first
+# version read a pid, then asserted it was alive - and CI caught it: launchd had
+# already replaced that incarnation, so `kill -0` on the old pid failed while a
+# loop was running perfectly well under a new one. The question is "is a loop
+# running now", not "is that particular process still there".
+live_pid() {
+  launchctl list "$LABEL" 2>/dev/null |
+    sed -n 's/^[[:space:]]*"PID"[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p'
+}
+
 pid=""
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  pid="$(launchctl list "$LABEL" 2>/dev/null | sed -n 's/^[[:space:]]*"PID"[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p')"
-  [ -n "$pid" ] && [ "$pid" != "0" ] && break
+for _ in $(seq 1 20); do
+  p="$(live_pid)"
+  if [ -n "$p" ] && [ "$p" != "0" ] && kill -0 "$p" 2>/dev/null; then
+    pid="$p"
+    break
+  fi
   sleep 1
 done
 
-if [ -n "$pid" ] && [ "$pid" != "0" ] && kill -0 "$pid" 2>/dev/null; then
+if [ -n "$pid" ]; then
   t_ok "the loop is running as pid $pid, started by launchd"
 else
-  t_no "launchd loaded the agent but no process is running"
+  t_no "launchd loaded the agent but no loop is running"
   printf '     launchctl list said: %s\n' "$(launchctl list "$LABEL" 2>&1 | tr '\n' ' ')"
+  # The station's own log says WHY, and without it this failure is a guess.
+  # A crash loop and a slow start look identical from launchctl alone.
+  for f in "$TR/.station-service.log" "$TR/.agent-service.log"; do
+    [ -f "$f" ] || continue
+    printf '     --- %s ---\n' "$f"
+    tail -30 "$f" | sed 's/^/     /'
+  done
 fi
 
 # --- THE ONE THAT MATTERS: stop: yes sticks ----------------------------------
 # Write the stop flag the way the far side does, then watch. Under a correct
 # KeepAlive the loop exits 0 and launchd leaves it alone. Under an
 # unconditional one it comes straight back, and the test sees a new pid.
-if [ -n "$pid" ] && [ "$pid" != "0" ]; then
+if [ -n "$pid" ]; then
   req="$TR/station/request"
   mkdir -p "$(dirname "$req")"
   printf 'version: 1\nid: stop-test\nstop: yes\n' > "$req"
 
+  # Waiting for launchd to report NO pid, not for one process to disappear.
+  # Under a wrong KeepAlive the loop exits and is restarted, so watching a
+  # single pid would see it "stop" and call that a pass.
   gone=no
-  for _ in $(seq 1 30); do
-    kill -0 "$pid" 2>/dev/null || { gone=yes; break; }
+  for _ in $(seq 1 40); do
+    p="$(live_pid)"
+    if [ -z "$p" ] || [ "$p" = "0" ]; then gone=yes; break; fi
     sleep 1
   done
 
@@ -131,8 +155,8 @@ if [ -n "$pid" ] && [ "$pid" != "0" ]; then
     t_ok "the loop honoured 'stop: yes' and exited"
 
     # Now the real question. Give launchd time to restart it if it intends to.
-    sleep 5
-    newpid="$(launchctl list "$LABEL" 2>/dev/null | sed -n 's/^[[:space:]]*"PID"[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p')"
+    sleep 8
+    newpid="$(live_pid)"
     if [ -z "$newpid" ] || [ "$newpid" = "0" ]; then
       t_ok "launchd did NOT restart it: 'stop: yes' sticks, and the restart loop cannot happen"
     else
