@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  intercom.sh - submit a step to a reachable agent, and read its log
+#  intercom.sh - submit a step to a reachable station, and read its log
 # =============================================================================
 #
 #     export INTERCOM_URL=https://<your-function-app>.azurewebsites.net

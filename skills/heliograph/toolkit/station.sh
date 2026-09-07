@@ -13,7 +13,7 @@
 #  back - so the loop stops needing a human to relay each run:
 #
 #     Claude   edits station/request (new id), pushes ─────────────▶ repo
-#     agent    sees it within seconds, runs ./run.sh
+#     station    sees it within seconds, runs ./run.sh
 #              pushes station/status "running" ────────────────────▶ repo
 #              run.sh pushes ops-logs/<step>-<UTC>.txt ──────────▶ repo
 #              pushes station/status "idle exit=N" ────────────────▶ repo
@@ -37,7 +37,7 @@
 #  <id>` kills it only if that id is the one running, so a stale cancel cannot
 #  reap a later run. The step runs in its own process group in the background and
 #  the loop keeps polling while it works - an hour-long step no longer makes the
-#  agent deaf for an hour. A cancelled run publishes state `cancelled` and leaves
+#  station deaf for an hour. A cancelled run publishes state `cancelled` and leaves
 #  whatever the log had reached, which is usually the evidence you wanted anyway.
 #
 #  SAFETY, and this loop's whole posture is in this paragraph.
@@ -80,7 +80,7 @@ PIN_ONLY=0
 # 1 = the station may run steps that change state, when the request asks for one.
 #
 # DEFAULT 0. This was 1 for a while and the reason was a real one: the flag is
-# typed once at agent start, often days before the request it gates, and a
+# typed once at station start, often days before the request it gates, and a
 # forgotten one surfaced as a silent "refused" long after the push - wasting
 # exactly the round trip this tooling exists to save.
 #
@@ -165,11 +165,11 @@ SCOPE="$(tp_scope)"
 # and a station in the field must stay readable by a control that predates this.
 BRANCH="$SCOPE"
 
-# One agent per checkout. Two would double-run every request and race on push.
+# One station per checkout. Two would double-run every request and race on push.
 #
 # --pin takes no lock, deliberately: approving a new step is exactly the thing
 # an operator does WHILE the loop is running, and a pin that refused because the
-# agent was up would be useless at the only moment it is wanted.
+# station was up would be useless at the only moment it is wanted.
 if [ "$PIN_ONLY" = "0" ]; then
   if [ -e "$LOCK" ]; then
     pid="$(cat "$LOCK" 2>/dev/null || echo)"
@@ -202,11 +202,11 @@ RUNNING=0
 CHILD=""
 cleanup() {
   # Only if this process took it. A --pin run holds no lock, and removing one it
-  # never owned would unlock a real agent that is mid-run.
+  # never owned would unlock a real station that is mid-run.
   [ "$PIN_ONLY" = "0" ] && rm -f "$LOCK"
   # The step runs in its own session now, so Ctrl-C on the station no longer
   # reaches it. Signal the group explicitly: an operator who interrupts the
-  # agent expects the run to stop, not to carry on detached and push a log
+  # station expects the run to stop, not to carry on detached and push a log
   # afterwards with nothing watching it.
   if [ "$RUNNING" = "1" ] && [ -n "$CHILD" ]; then
     say "interrupted mid-run - signalling the step, the log may not have been pushed"
@@ -306,7 +306,7 @@ cap_refuse_root || { rm -f "$LOCK"; exit 5; }
 
 # --- status, pushed so the far side can see what is happening ----------------
 # Two extra commits per run. Worth it: without the "running" one, a long step is
-# indistinguishable from an agent that never woke up.
+# indistinguishable from a station that never woke up.
 publish_status() {
   local state="$1" id="$2" step="$3" extra="${4:-}" alsofile="${5:-}"
   mkdir -p "$(dirname "$STATUS")"
@@ -427,7 +427,7 @@ while :; do
     say "updated: $(tp_revision)"
 
     # Self-update. Without this, a fix to station.sh cannot take effect while the
-    # agent is running it, and the operator has to be told to restart - which
+    # station is running it, and the operator has to be told to restart - which
     # defeats the point of them starting it once and walking away. Worse, bash
     # reads a script incrementally, so editing this file underneath a running
     # loop can corrupt execution outright.
@@ -435,7 +435,7 @@ while :; do
     # Re-exec at this exact point, immediately after a clean pull and never
     # mid-run, so the replacement starts from a known state. exec keeps the PID,
     # so the lock has to go first or the new process refuses to start seeing
-    # "another agent" that is really itself.
+    # "another station" that is really itself.
     NEW_HASH="$(sha256sum "$REPO_ROOT/station.sh" 2>/dev/null | cut -d' ' -f1)"
     if [ -n "$NEW_HASH" ] && [ "$NEW_HASH" != "$SELF_HASH" ]; then
       say "station.sh changed - restarting into the new version"
@@ -465,7 +465,7 @@ while :; do
   # Every refusal below takes the same shape: say it here, PUBLISH it with a
   # reason the far side can act on, and record the id so the same request is not
   # re-refused every poll. The publishing is the part that matters - a refusal
-  # nobody can see is indistinguishable from an agent that died.
+  # nobody can see is indistinguishable from a station that died.
   refuse() {  # refuse <reason for the status file> <what to say locally>
     say "REFUSED: $2"
     publish_status "refused" "$ID" "$STEP" "reason:   $1"
@@ -488,7 +488,7 @@ while :; do
 
   if is_action_step "$STEP" && [ "$ALLOW_ACTIONS" != "1" ]; then
     refuse "step changes state; restart the station with --allow-actions to permit it" \
-           "'$STEP'${ENVLINE:+ with env '$ENVLINE'} changes state, and this agent is read-only (the default)"
+           "'$STEP'${ENVLINE:+ with env '$ENVLINE'} changes state, and this station is read-only (the default)"
     sleep "$INTERVAL"; continue
   fi
 
@@ -508,7 +508,7 @@ while :; do
   #
   # THE STEP RUNS IN ITS OWN SESSION, IN THE BACKGROUND, so this loop stays
   # responsive while it works. Before this, a step that took an hour made the
-  # agent deaf for an hour: `cancel` could not be heard, and every later request
+  # station deaf for an hour: `cancel` could not be heard, and every later request
   # queued behind a run nobody wanted any more. run_detached (above) gives the
   # step its own process group, so the whole tree - run.sh, the step, and
   # whatever those invoke - can be signalled together; killing just the child

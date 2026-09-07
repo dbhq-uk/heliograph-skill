@@ -311,7 +311,7 @@ cleanup() { stop_progress; }
 # runs the handler and then resumes exactly where it was, so `trap cleanup EXIT
 # INT TERM` left this loop polling forever through a SIGTERM. On a container
 # platform that is the difference between a clean shutdown and being SIGKILLed
-# when the grace period runs out - and a SIGKILLed agent writes no final status,
+# when the grace period runs out - and a SIGKILLed station writes no final status,
 # so the far side is left with a heartbeat that simply stops.
 #
 # The exit codes are the shell's own convention, 128 + signal number, so a

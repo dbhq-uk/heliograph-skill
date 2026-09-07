@@ -4,7 +4,7 @@
 # =============================================================================
 #
 #  pigeonhole.sh runs inside the estate and cannot be reached. This is what talks
-#  to it: it writes the request, ships the agent's own code, and reads the logs
+#  to it: it writes the request, ships the station's own code, and reads the logs
 #  back. Neither side can reach the other; both reach the storage account.
 #
 #      ./drop.sh bundle                 build and upload the station's code
@@ -96,7 +96,7 @@ blob_down() { # blob_down <container> <name> <file>
 
 case "$cmd" in
 
-# --- the agent's own code ----------------------------------------------------
+# --- the station's own code ----------------------------------------------------
 # Everything pigeonhole.sh needs at runtime, in one artifact. The container has
 # no way to clone the repo, so this IS how the station is deployed - and why
 # updating it is an upload rather than a redeploy of the container group.
@@ -219,7 +219,7 @@ watch)
 
 # --- shut it down ------------------------------------------------------------
 # A clean exit, not a kill. The container group's restart policy is OnFailure,
-# so an agent that exits 0 stays stopped rather than coming straight back.
+# so a station that exits 0 stays stopped rather than coming straight back.
 stop)
   tmp="$(mktemp)"
   {

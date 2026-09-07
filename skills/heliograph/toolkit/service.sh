@@ -152,7 +152,7 @@ credential_check() {
       if [ -n "${SSH_AUTH_SOCK:-}" ]; then
         warn "origin is an SSH remote and this shell has an ssh-agent, which the service will NOT inherit."
         warn "  An agent key lasts only as long as your session, and the whole point of a service is"
-        warn "  to outlive it. Give the service a key it can read without an agent: put one at"
+        warn "  to outlive it. Give the service a key it can read without an ssh agent: put one at"
         warn "  ~/.ssh/id_ed25519, or name it in ~/.ssh/config for this host."
         warn "  Verify before installing:  ./start.sh --check"
       else

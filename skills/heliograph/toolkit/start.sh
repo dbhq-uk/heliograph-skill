@@ -318,7 +318,7 @@ credential() {
   case "$scheme" in
     ssh)
       # ssh-add's EXIT STATUS is the answer here, not its stdout. With a live
-      # agent holding no keys it prints "The agent has no identities." and exits
+      # agent holding no keys it prints "The station has no identities." and exits
       # 1, and piping that through `awk '{print $2}'` produced
       # `ok  ssh key  agent offers: agent` - an ok line for the transport this
       # skill recommends, in the state where the key is missing.

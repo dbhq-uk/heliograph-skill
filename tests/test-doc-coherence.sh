@@ -198,4 +198,51 @@ else
   printf '     %s\n' "$stray"
 fi
 
+# --- the same rule, applied to the toolkit -----------------------------------
+# The rename reached SKILL.md and references/ first; the toolkit's own comments
+# came last, and this is what stops them drifting back.
+#
+# THE EXCLUSIONS ARE THE INTERESTING PART, and they are reasons rather than a
+# mute list. Every one of these is `agent` meaning something that genuinely is
+# an agent, or a name that cannot change without breaking a machine:
+#
+#   agent/request, agent/status, .agent-state, .agent-approved, .agent.lock,
+#   .agent-service.pid
+#       read by the compat shim for stations bootstrapped before the rename.
+#       Those machines cannot be reached to be upgraded - that is the entire
+#       premise of this tool - so renaming them breaks precisely the estates
+#       the shim exists for.
+#
+#   the sentence in station.sh explaining the rename
+#       it has to say the old word or it stops explaining anything.
+#
+#   blob_up agent, "requests, logs, status and agent"
+#       a literal storage container name on accounts that already exist.
+#
+#   a forwarded ssh agent, an Azure DevOps build agent
+#       that is what those things are called.
+stray_toolkit="$(grep -rn '\bagents\?\b' "$TOOLKIT" --include='*.sh' --include='*.ps1' 2>/dev/null \
+  | grep -viE 'ssh|forwarded|build agent|user-agent|blob_up agent|status and agent|/agent/|agent/request|agent/status|\.agent[-.]|agent-service|called the .agent.|vocabulary changed|agent key|agent holding|agent reachable|agent at all|agent will not be usable' \
+  || true)"
+if [ -z "$stray_toolkit" ]; then
+  t_ok "the toolkit does not call the far-side loop an agent"
+else
+  t_no "the toolkit does not call the far-side loop an agent"
+  printf '%s\n' "$stray_toolkit" | sed 's/^/     /'
+fi
+
+# And the compat shim's paths must still be there, because an over-eager rename
+# of the kind above is exactly what would remove them - silently, and only
+# visibly on a machine nobody can reach.
+missing=""
+for path in "agent/request" "agent/status" ".agent-state" ".agent-approved" ".agent.lock"; do
+  grep -q -- "$path" "$STATION" || missing="$missing $path"
+done
+if [ -z "$missing" ]; then
+  t_ok "the compat shim still reads every pre-rename path"
+else
+  t_no "the compat shim has lost:$missing"
+  printf '     A station bootstrapped before the rename would go silently deaf.\n'
+fi
+
 t_summary

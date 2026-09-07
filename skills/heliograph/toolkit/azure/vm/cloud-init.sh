@@ -9,7 +9,7 @@
 #    1. git, ca-certificates - nothing else. bash, GNU sed, GNU coreutils and
 #       setsid already ship on Ubuntu 24.04, so nothing else start.sh's own
 #       preflight needs is missing.
-#    2. an unprivileged "heliograph" user to run the agent as - never root,
+#    2. an unprivileged "heliograph" user to run the station as - never root,
 #       for the same reason the Dockerfile does not run the container as
 #       root: a captured log ends up owned by this user, not by root.
 #    3. the clone itself, using the SAME env-based credential trick
@@ -18,7 +18,7 @@
 #       http.extraHeader=...`, so the token never appears in this process's
 #       argv, which is exactly as readable via /proc/<pid>/cmdline on a bare
 #       VM as it is inside a container.
-#    4. a systemd unit so the agent survives a reboot and gets restarted if
+#    4. a systemd unit so the station survives a reboot and gets restarted if
 #       it crashes - the VM's equivalent of ACI's `restartPolicy: OnFailure`.
 #
 #  THE CREDENTIAL ARRIVES THROUGH AZURE'S CUSTOM DATA, which is not a place
@@ -88,7 +88,7 @@ fi
 
 chmod +x "$WORKDIR/start.sh"
 
-# The credential the RUNNING agent needs is separate from the one-off clone
+# The credential the RUNNING station needs is separate from the one-off clone
 # above: start.sh's own preflight and station.sh's later pushes both re-read
 # GIT_TOKEN/GIT_TOKEN_USER via caplib.sh's cap_git, the same env-based
 # lookup as the clone. An EnvironmentFile, not inline Environment= lines in
@@ -104,7 +104,7 @@ chmod 0640 /etc/heliograph/env
 
 cat > /etc/systemd/system/heliograph.service <<UNIT
 [Unit]
-Description=heliograph agent
+Description=heliograph station
 After=network-online.target
 Wants=network-online.target
 
