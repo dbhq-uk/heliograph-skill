@@ -31,6 +31,47 @@ failed**.
 
 If you can SSH in yourself, do that instead and do not use this skill.
 
+## Where this sits
+
+This skill is the **far side and the method**: the payload that runs on the
+machine, and how to debug across a gap. It needs nothing installed there, and
+that constraint is the whole proposition.
+
+The **near side** - your machine - has two optional things that make the same
+loop easier to drive. Neither is required, and neither changes what happens on
+the far side.
+
+| | |
+|---|---|
+| the `heliograph` CLI | a single static binary. `send`, `watch`, `logs --gaps`, `doctor`, `plant` |
+| `heliograph mcp` | the same commands as typed MCP tools, for any MCP-capable agent |
+
+```bash
+command -v heliograph >/dev/null && echo "use the CLI" || echo "hand-edit, as below"
+```
+
+**If the binary is there, prefer it.** It writes the same `station/request` on
+the same branch that step 4 below writes by hand, so a station cannot tell the
+difference and there is nothing to migrate. What you get for it:
+
+- `heliograph send net-probe HOSTS="sql01 sql02"` instead of editing a file and
+  inventing an id. Values with spaces are re-quoted on the way out, which is the
+  bug you would otherwise hit once and not understand
+- `heliograph logs --gaps` does the timestamp arithmetic that the method section
+  below tells you to do by eye, and reports an all-identical-timestamps log as
+  an **error** rather than as "no gaps"
+- `send` rebases onto the remote before it pushes, and `watch` pulls on every
+  poll, so the `git pull --rebase` discipline in step 4 stops being something
+  you have to remember at the moment it matters
+
+**If it is not there, everything below works unchanged.** That is deliberate:
+the far side must never depend on the near side having anything.
+
+Install and full reference: <https://heliograph.dbhq.uk>. The CLI lives in
+[dbhq-uk/heliograph](https://github.com/dbhq-uk/heliograph); it is Go, and it
+stays out of this repository so that "plain bash, you can read it before you run
+it" keeps being true here.
+
 ## Prerequisites
 
 Bash 4+, git, GNU coreutils. Nothing to install and no credentials of the
@@ -108,16 +149,16 @@ before the first one. Every rule in it cost a round trip.
 
 Ask the operator to run `./start.sh` once, then stop relaying runs. It checks that
 the machine can capture properly and that git can push from it, then starts the
-agent, which watches `station/request` and runs when the `id:` changes:
+station, which watches `station/request` and runs when the `id:` changes:
 
 ```
 you       git pull --rebase, edit station/request (new id), push ──▶ transport repo
-agent     picks it up within seconds, runs ./run.sh
+station   picks it up within seconds, runs ./run.sh
           pushes station/status, then the log ───────────────▶ transport repo
 you       poll, read the log, decide the next step ◀────────
 ```
 
-**Always `git pull --rebase` before you push.** You and the agent push to the same
+**Always `git pull --rebase` before you push.** You and the station push to the same
 branch, and it pushes far more often than you do: a status commit when a run
 starts and again when it ends, a progress snapshot every 60 seconds during a long
 step, and the log itself. So the remote moves under you while you are writing the
@@ -128,10 +169,10 @@ next request, and a plain push is rejected:
 ```
 
 That is not a fault, it is two writers on one branch working as intended. The
-agent already does exactly this on its own side before every push. Rebase rather
+station already does exactly this on its own side before every push. Rebase rather
 than merge: it keeps the history readable as a sequence of requests and answers
 instead of threading it with merge commits. Conflicts are rare in practice, since
-the agent only ever writes `station/status` and `ops-logs/` while you write
+the station only ever writes `station/status` and `ops-logs/` while you write
 `station/request` and `steps/`.
 
 If they want to know whether the machine will work before committing to anything,
@@ -139,29 +180,29 @@ If they want to know whether the machine will work before committing to anything
 
 The trigger is the **`id`**, not a new commit: docs and step edits land
 constantly and would otherwise fire runs nobody asked for. `stop: yes` ends the
-agent from your side, which matters because nobody is sitting at that terminal.
+station from your side, which matters because nobody is sitting at that terminal.
 
 Every step declares itself in its own file - `# heliograph-mode: read-only` or
 `action` - and a step that declares neither will not run. A state-changing step
 needs `CONFIRM=yes` in the request's `env:` **and** `run.sh`'s own gate, and the
-agent refuses it altogether unless the operator started it with
+station refuses it altogether unless the operator started it with
 `--allow-actions`. The loop is read-only by default; a refusal is published to
 `station/status` within seconds, so you find out on the next poll rather than after
 a wasted round trip.
 
 `cancel: yes` kills the step running right now, and `cancel: <id>` kills it only
-if that id is the one running. The agent stays responsive while a step runs, so a
+if that id is the one running. The station stays responsive while a step runs, so a
 long or wrong run does not have to be waited out. A new `id` does **not** cancel:
 it queues behind the running step, because an in-flight step may be mid-change.
 
 A long run is not a black box: the partial log is pushed every 60 seconds with a
 line count and the last real line, so `git pull` shows where it has got to.
 
-While an agent is running, **say so and wait for the log**. Ask the operator only
+While a station is running, **say so and wait for the log**. Ask the operator only
 for what git cannot carry: an interactive cloud login, a decision, or a fact only
 they have.
 
-Without an agent, the operator's whole interface is `git pull && ./run.sh`. Never
+Without a station, the operator's whole interface is `git pull && ./run.sh`. Never
 send them a command to paste; set `DEFAULT_STEP` and push.
 
 Every runner, function and knob: [references/runner.md](references/runner.md).
@@ -174,7 +215,7 @@ policy for it has no outbound path at all, and git stops being a transport and
 becomes a dependency that cannot be met.
 
 `pigeonhole.sh` and `drop.sh` carry the same contract over Azure Blob Storage
-instead. You write the request to a container, the agent polls it and writes the
+instead. You write the request to a container, the station polls it and writes the
 log back, and neither side ever reaches the other - a private endpoint is
 VNet-local, so that traffic never touches the route that is blocking everything
 else. The capture is untouched: it still calls `run.sh`, so the log is the same
@@ -191,7 +232,7 @@ a container can start cleanly on a host with no network at all. When to use it,
 how the lane replaces branch binding, and the traps:
 [references/pigeonhole.md](references/pigeonhole.md).
 
-### When you can reach the agent
+### When you can reach the station
 
 The rarer case, and worth checking for before assuming the pigeonhole. An Azure
 Function App has a public HTTPS endpoint *and* sits inside the VNet, so the
@@ -255,7 +296,7 @@ investigation.
 ## Running it in Azure, instead of on somebody's terminal
 
 Sometimes there is no willing human to start `./start.sh` and leave it running.
-`toolkit/azure/` runs the agent as Azure infrastructure instead. Five hosts:
+`toolkit/azure/` runs the station as Azure infrastructure instead. Five hosts:
 
 | host | state |
 |---|---|
@@ -326,6 +367,17 @@ store the far side has. Details, and why each guard is there:
 
 ## References
 
+Near side, on the web, because it changes with the binary rather than with this
+skill and one copy is better than two:
+
+| | |
+|---|---|
+| <https://heliograph.dbhq.uk/cli> | every CLI command, and the reasoning behind the ones that are not obvious |
+| <https://heliograph.dbhq.uk/mcp> | the MCP tools, for driving this from an agent |
+| <https://heliograph.dbhq.uk/transports> | git, file share, bundle, relay |
+
+Far side, here, because it ships with the payload:
+
 | | |
 |---|---|
 | [references/steps.md](references/steps.md) | writing a step, and the traps that cost round trips |
@@ -333,8 +385,8 @@ store the far side has. Details, and why each guard is there:
 | [references/method.md](references/method.md) | how to debug across a gap. The expensive lessons |
 | [references/transport.md](references/transport.md) | how the control node authenticates to the git host |
 | [references/pigeonhole.md](references/pigeonhole.md) | the blob transport, for a control node that cannot reach git at all |
-| [references/intercom.md](references/intercom.md) | the HTTP transport, for the rarer case where you can reach the agent |
-| [references/azure.md](references/azure.md) | running the agent in Azure, and what deploying it taught us |
+| [references/intercom.md](references/intercom.md) | the HTTP transport, for the rarer case where you can reach the station |
+| [references/azure.md](references/azure.md) | running the station in Azure, and what deploying it taught us |
 | [references/secrets.md](references/secrets.md) | `secret.sh`, for a value that has to reach the far side |
 | [references/remote-repo.md](references/remote-repo.md) | changing a repo that is also on the far side |
 | [references/container.md](references/container.md) | running the control node in a container: what ships, why, and the honest limits |

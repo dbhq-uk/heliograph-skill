@@ -20,7 +20,7 @@ changes; the whole run comes back as a log that is committed and pushed.
 3. **One branch per investigation**, one step per question, `TASK.md` holding
    what was measured apart from what was concluded
 4. **The operator runs `./start.sh` once** and stops relaying. It proves the
-   machine can capture and that git can push from it, then starts the agent,
+   machine can capture and that git can push from it, then starts the station,
    which watches the branch and runs when the request `id` changes
 5. **Read the whole log**, record the measurement, decide the next step
 
@@ -31,6 +31,21 @@ untimed log, a hang and slow progress are indistinguishable after the fact.
 
 **The log is pushed even on failure**, with the real exit code intact, so a
 failed run reads as clearly as a successful one and no round trip is wasted.
+
+## One component of a larger thing
+
+This repository is the **far side and the method**: plain bash, nothing to
+install, no credentials of its own. That constraint is what lets it run on a
+locked-down box where installing anything is its own change request.
+
+The near side is [dbhq-uk/heliograph](https://github.com/dbhq-uk/heliograph): a
+Go CLI, an MCP server, more transports, and the documentation site at
+<https://heliograph.dbhq.uk>. All of it is optional. The loop below works with
+nothing but git and bash, and the CLI writes the same files by the same rules,
+so a station cannot tell which one sent the request.
+
+**No Go will ever be added here.** The two repositories are separate so that
+"plain bash, you can read it before you run it" stays true of this one.
 
 ## What is where
 
@@ -59,7 +74,7 @@ run it, and the only thing crossing the gap is a git commit.
 ## Running it in Azure
 
 The operator does not have to be a person at a terminal. `toolkit/azure/` has
-templates that run the agent as Azure infrastructure instead.
+templates that run the station as Azure infrastructure instead.
 
 Four hosts, each in bicep and Terraform:
 
