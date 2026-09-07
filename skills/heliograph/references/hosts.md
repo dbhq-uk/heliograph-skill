@@ -35,12 +35,12 @@ station. The difference is the whole point of this table.
 | operator's terminal (`start.sh`) | **proven** | `tests/test-start.sh`, 94 assertions, every CI run |
 | Docker (`toolkit/docker/`) | **proven** | `tests/test-container.sh` builds the image and runs the loop in it, 228 assertions, every CI run |
 | systemd (`toolkit/service.sh`) | **proven** | `tests/test-service.sh` installs a unit and finds a running loop, every CI run |
+| Kubernetes (`toolkit/kubernetes/`) | **proven** | `tests/test-kubernetes.sh` applies the shipped manifest to a kind cluster and drives a run through it, every CI run |
 | Azure Container Instances, VNet-injected (`toolkit/azure/aci/`) | **proven** | deployed live |
 | Azure Web App for Containers (`toolkit/azure/webapp/`) | **proven** | deployed live |
 | Azure Container Apps Job, scheduled (`toolkit/azure/containerappsjob/`) | **proven** | deployed live |
 | launchd (`toolkit/service.sh`) | **validated** | `test-service.sh` asserts the code path exists; it cannot run one on a Linux runner |
 | Windows scheduled task (`toolkit/service.ps1`) | **validated** | the Windows runner proves `station.ps1` finds bash and hands over; it does not install the task |
-| Kubernetes (`toolkit/kubernetes/`) | **validated** | `tests/test-hosts.sh` checks its shape; no cluster has ever run it |
 | Azure VM with a systemd unit (`toolkit/azure/vm/`) | **validated** | the template validates; the subscription had no quota to prove it |
 
 ### What "validated" costs you

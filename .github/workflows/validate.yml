@@ -595,6 +595,60 @@ jobs:
 
   # Single required check for branch protection. Adding a job above does not mean
   # remembering to add it to the protection rule - it only needs listing here.
+  kubernetes:
+    name: The manifest runs on a real cluster
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # toolkit/kubernetes/heliograph.yaml shipped for months with no test, and
+      # no cluster had ever run it. This is what moves it from "validated" to
+      # "proven" in references/hosts.md: a kind cluster, the real manifest, and
+      # a station that clones a repo, runs a step and pushes the log back.
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: heliograph-ci
+          wait: 180s
+
+      - name: Apply it and drive a run through it
+        run: ./tests/test-kubernetes.sh 2>&1 | tee /tmp/k8s.out
+
+      - name: It must not have skipped
+        # A skipped host test is worse than a missing one: the table says
+        # "proven" on the strength of a run that never happened.
+        run: |
+          if grep -q '^SKIP' /tmp/k8s.out; then
+            echo "::error::the Kubernetes test skipped. Nothing was applied to any cluster."
+            exit 1
+          fi
+          grep -qE '^test-kubernetes\.sh: [0-9]+ passed, 0 failed, 0 skipped$' /tmp/k8s.out || {
+            echo "::error::test-kubernetes.sh did not report a clean run"; exit 1; }
+
+  macos:
+    name: launchd keeps a Mac control node alive
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # There is no systemd on a Mac and the setsid fallback does not survive a
+      # reboot, so a Mac control node lost its loop on every restart. The
+      # LaunchAgent fixes that, and until now nothing had ever loaded one.
+      #
+      # The assertion that earns this runner is that `stop: yes` STICKS.
+      # KeepAlive/SuccessfulExit=false is our reading of launchd's behaviour,
+      # and a string in a plist is a belief about somebody else's software.
+      - name: Load a real LaunchAgent and stop it
+        run: ./tests/test-launchd.sh 2>&1 | tee /tmp/launchd.out
+
+      - name: It must not have skipped
+        run: |
+          if grep -q '^SKIP' /tmp/launchd.out; then
+            echo "::error::the launchd test skipped on a macOS runner, which should be impossible."
+            exit 1
+          fi
+          grep -qE '^test-launchd\.sh: [0-9]+ passed, 0 failed, 0 skipped$' /tmp/launchd.out || {
+            echo "::error::test-launchd.sh did not report a clean run"; exit 1; }
+
   ci-ok:
     name: CI OK
     runs-on: ubuntu-latest
@@ -607,6 +661,8 @@ jobs:
       - container
       - windows
       - powershell
+      - kubernetes
+      - macos
     steps:
       - name: Fail if any job did not succeed
         run: |
