@@ -1,6 +1,6 @@
-# Running the agent in Azure
+# Running the station in Azure
 
-Five places the agent can run. Each ships as bicep and as Terraform, because
+Five places the station can run. Each ships as bicep and as Terraform, because
 estates are split on which they accept.
 
 All of them are bring-your-own. You pass in a VNet, a subnet, a plan or an
@@ -55,14 +55,14 @@ you cannot have. The portal's quota blade may not help either - it needs
 `PIGEONHOLE_RESUME=1` and `PIGEONHOLE_ONCE=1`. Neither is optional and the
 first is the subtle one.
 
-The agent normally absorbs whatever id is in the drop when it starts, so that a
+The station normally absorbs whatever id is in the drop when it starts, so that a
 host whose restart policy brings it back does not re-run the last step
 unwatched. **For a runner invoked fresh every tick, that rule means it answers
 nothing, ever** - and the failure is silent, because an unanswered request looks
 exactly like a slow one. `PIGEONHOLE_RESUME` reads the last answered id from the
 status blob instead, making the far side's own record the memory.
 
-`PIGEONHOLE_ONCE` ends the loop so the invocation can end. Without it the agent
+`PIGEONHOLE_ONCE` ends the loop so the invocation can end. Without it the station
 polls until the host kills it at the function timeout, and a step still running
 is lost with it.
 
@@ -99,7 +99,7 @@ bring-your-own and do not own the account, so this is granted alongside.
 
 The Functions Python image is Debian bookworm with bash 5.2, GNU sed 4.9 - so
 `sed -u` is honoured and a captured line is stamped when it is produced - and
-GNU coreutils. That is what `caplib.sh` needs, so the agent shells out to the
+GNU coreutils. That is what `caplib.sh` needs, so the station shells out to the
 bash toolkit rather than reimplementing capture in Python.
 
 What it does not have is `git`. So this host uses the **pigeonhole**, and blob
@@ -286,7 +286,7 @@ Raising `WEBSITES_CONTAINER_START_TIME_LIMIT` only delays this. Nothing was ever
 going to answer.
 
 The fix is not a stub. The image now ships `status-server.pl`, which serves the
-agent's own status file:
+station's own status file:
 
 ```
 $ curl https://yourapp.azurewebsites.net/status
@@ -299,7 +299,7 @@ utc:      2026-08-19T15:25:34Z
 ```
 
 That turns the probe from an obstacle into the reason to pick this host. The
-hardest question about a far-side agent is "is it still running, or did it die
+hardest question about a far-side station is "is it still running, or did it die
 an hour ago", and this is the only host that answers it without cloning
 anything.
 
@@ -312,7 +312,7 @@ Three things about it:
   would have been adding a package to do something already possible.
 - **`/` and `/health` always return 200 while the server answers. `/status` does
   not.** That split matters. A startup probe asks "did the container come up",
-  and returning 503 there because the agent had not written a status yet failed
+  and returning 503 there because the station had not written a status yet failed
   the probe and stopped the site. We made that mistake first. Point a platform
   probe at `/`, and point a monitor at `/status`.
 
@@ -441,7 +441,7 @@ not a difference in what Azure allows.
 App Service for Linux custom containers runs a mandatory startup probe: it
 pings the container over HTTP on port 80 (or `WEBSITES_PORT`) and, if nothing
 answers within `WEBSITES_CONTAINER_START_TIME_LIMIT` (default 230 seconds),
-kills the container and starts a fresh one. heliograph's agent loop is not a
+kills the container and starts a fresh one. heliograph's station loop is not a
 web server and never will be, so this fires every time:
 
 ```
@@ -526,7 +526,7 @@ grep -i entrypoint LogFiles/*_docker.log   # NOT the *_default_scm_docker.log on
 ```
 
 The entrypoint clone, the credential line and the full preflight table all
-showed up there, confirming the agent starts correctly on this host despite
+showed up there, confirming the station starts correctly on this host despite
 the startup-probe restarts above.
 
 ## Container Apps Job
@@ -715,7 +715,7 @@ to approve it".
 
 `toolkit/pipelines/github-actions.yml` and `azure-pipelines.yml`.
 
-The agent is already inside the estate with network reach and git credentials,
+The station is already inside the estate with network reach and git credentials,
 because that is what a build agent is for. Adding a pipeline is an approved
 activity. Deploying a container into production is a change board conversation.
 
@@ -729,11 +729,11 @@ Pushing a request is the trigger. Measured end to end on GitHub Actions:
 09:18:04  log committed back
 ```
 
-Eight seconds, which is faster than the five-second polling agent.
+Eight seconds, which is faster than the five-second polling station.
 
 **The path filter is load-bearing.** The job pushes a log back, and that push is
 a commit. Without a filter it triggers itself, then does it again. Logs land in
-`ops-logs/` and the agent writes `station/status`, so triggering only on
+`ops-logs/` and the station writes `station/status`, so triggering only on
 `station/request` means neither can re-fire it. Verified: two requests produced
 exactly two runs, and the log pushes started nothing.
 
@@ -743,11 +743,11 @@ equivalent**, so there the path filter is the only structural guard and
 `***NO_CI***` in the commit message is the second.
 
 **Both files are now proven.** The Azure DevOps one ran end to end against a
-real organisation on 2026-08-24: request pushed, agent picked it up, step ran,
+real organisation on 2026-08-24: request pushed, station picked it up, step ran,
 log pushed back, and the log push did not re-fire the trigger. Everything in the
 next section was found during that first run.
 
-**Use `--once`, never the polling loop.** A pipeline job holds the agent for its
+**Use `--once`, never the polling loop.** A pipeline job holds the station for its
 whole duration, and polling git for an hour would block everyone else's builds.
 
 The limit: a step that takes two hours holds a build agent for two hours. For
@@ -761,7 +761,7 @@ it was, which is what made them expensive.
 **A new pipeline is not authorised for the pool or the repo, and the symptom is
 indistinguishable from an outage.** The run sits at `notStarted`. It never
 appears in the pool's job request list, so no agent is ever asked for and none
-comes up - and if the pool uses on-demand agents, you will find them all
+comes up - and if the pool uses on-demand stations, you will find them all
 `offline` and conclude the pool is dead. It is not. The evidence is in the
 build's own timeline:
 
@@ -780,7 +780,7 @@ PATCH .../pipelinePermissions/repository/{projectId}.{repoId}?api-version=7.1-pr
 {"pipelines":[{"id":<definitionId>,"authorized":true}]}
 ```
 
-Once authorised, the wait was seconds, not minutes: an agent came online and
+Once authorised, the wait was seconds, not minutes: a station came online and
 started the job almost immediately.
 
 **The build service needs Contribute on the transport repo, and finding its
@@ -831,7 +831,7 @@ the queue.
 ### A Kubernetes cluster they already run
 
 `toolkit/kubernetes/heliograph.yaml`. One `Deployment`, one replica, no Service
-and no Ingress, because the agent only makes outbound connections.
+and no Ingress, because the station only makes outbound connections.
 
 The cluster has already solved what bit the other hosts: egress is configured,
 so no NAT gateway surprise, secrets have a home, and **`kubectl logs` works**.
@@ -839,7 +839,7 @@ That last one is worth more than it sounds. A crash-looping VNet-injected ACI
 returns no logs at all, so debugging it means reproducing the failure elsewhere.
 Here you read them.
 
-`strategy: Recreate`, not RollingUpdate: two agents on one transport repo would
+`strategy: Recreate`, not RollingUpdate: two stations on one transport repo would
 both answer the same request and race on the push.
 
 Two things to know if you try this:

@@ -1,16 +1,16 @@
 # intercom - HTTP submit and poll
 
-The transport for an agent you *can* reach: submit a step over HTTPS, poll for its log. Storage stays behind the agent, and the operator never touches it.
+The transport for a station you *can* reach: submit a step over HTTPS, poll for its log. Storage stays behind the station, and the operator never touches it.
 
 ## When to use it
 
-Only when the agent's endpoint is reachable from the control node. That is unusual, because heliograph exists for the case where it is not - but an Azure Function App has a public HTTPS endpoint while sitting inside the VNet, and when that is true the [pigeonhole](pigeonhole.md) is indirection with no purpose: credentials for the operator to hold, a timer interval to wait, and four blob operations to move text between two machines that can already talk.
+Only when the station's endpoint is reachable from the control node. That is unusual, because heliograph exists for the case where it is not - but an Azure Function App has a public HTTPS endpoint while sitting inside the VNet, and when that is true the [pigeonhole](pigeonhole.md) is indirection with no purpose: credentials for the operator to hold, a timer interval to wait, and four blob operations to move text between two machines that can already talk.
 
-| | reaches the agent | operator needs | round trip |
+| | reaches the station | operator needs | round trip |
 |---|---|---|---|
-| git | agent reaches a remote | a git remote both can see | a push and a pull |
+| git | station reaches a remote | a git remote both can see | a push and a pull |
 | pigeonhole | neither reaches the other | storage credentials | one timer interval |
-| **intercom** | **control node reaches the agent** | **a URL and a function key** | **seconds** |
+| **intercom** | **control node reaches the station** | **a URL and a function key** | **seconds** |
 
 The pigeonhole is not deprecated by this and is still the right answer far more often. The Function host ships both; see [azure.md](azure.md).
 
@@ -85,7 +85,7 @@ It prints the log, keeps a copy under `ops-logs/`, and **exits with the step's o
 
 The same record. `status` is one of `queued`, `running`, `done`, `refused`, `failed`, `timeout`.
 
-**A step that exits non-zero is `done`, not `failed`.** It produced a log, and the log is the deliverable. `failed` means the agent could not run the step at all, which needs a different reaction. `refused` means the action gate stopped it before it ran, and `timeout` that it was killed at `wait` with a partial log.
+**A step that exits non-zero is `done`, not `failed`.** It produced a log, and the log is the deliverable. `failed` means the station could not run the step at all, which needs a different reaction. `refused` means the action gate stopped it before it ran, and `timeout` that it was killed at `wait` with a partial log.
 
 **Never truncate**, so a large log is paged rather than cut: `offset` returns bytes from that position and `nextOffset` says where to ask next. When `nextOffset` reaches `logBytes` the caller has all of it. A log that came back short would be a log missing exactly the part worth reading, with no way for the reader to tell.
 

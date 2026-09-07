@@ -30,7 +30,7 @@ something checked. Neither spelling is universal: `sed -u` is absent from
 busybox, `base64 -w0` is absent from BSD/macOS base64. A busybox `sed` does
 not fail loudly: the capture still runs and every line carries the same
 timestamp, which reads like a working log while destroying the single
-property these logs exist for. `start.sh` refuses to start the agent on
+property these logs exist for. `start.sh` refuses to start the station on
 one, and says what to install.
 
 **Can git push from here?** A token that authenticates against the host's REST API
@@ -98,7 +98,7 @@ The operator types one command, once. After that the loop is git in both directi
 has to be sitting on the far side to relay each run.
 
 **The trigger is `id`, not "a new commit."** Docs, step edits and payload changes land on a task
-branch constantly; if any commit fired a run, the agent would run on all of them. Only a changed
+branch constantly; if any commit fired a run, the station would run on all of them. Only a changed
 `id` starts anything, so a run is always something someone asked for on purpose.
 
 ### station/request
@@ -109,15 +109,15 @@ branch constantly; if any commit fired a run, the agent would run on all of them
 | `step` | which step to run. Blank means `DEFAULT_STEP` from `run.sh` |
 | `env` | extra environment for the run - `CONFIRM=yes`, `TARGET_REPO=/path`, ... |
 | `cancel` | `yes` kills the step running right now; an id kills it only if that id is running |
-| `stop` | `yes` makes the agent exit cleanly after its current run |
-| `note` | free text for the next human. Ignored by the agent |
+| `stop` | `yes` makes the station exit cleanly after its current run |
+| `note` | free text for the next human. Ignored by the station |
 
 `stop: yes` matters more than it looks: the whole point is that nobody is at that terminal, so the
-agent has to be stoppable from the same side that starts its work.
+station has to be stoppable from the same side that starts its work.
 
 ### Watching a run in progress
 
-While a step runs, the agent pushes the **partial log** every `PROGRESS_EVERY` seconds (default
+While a step runs, the station pushes the **partial log** every `PROGRESS_EVERY` seconds (default
 60, `0` disables) along with an `station/status` carrying a line count and the last real line:
 
 ```
@@ -140,7 +140,7 @@ The runner still owns the log. This publishes a snapshot and never writes to it.
 ### Cancelling a run
 
 The step runs in its own process group, in the background, and the loop keeps polling while it
-works. An hour-long step no longer makes the agent deaf for an hour.
+works. An hour-long step no longer makes the station deaf for an hour.
 
 ```
 cancel: yes                     # kill whatever is running
@@ -158,10 +158,10 @@ cancel: 20260813T1500Z-survey   # kill it only if that id is the one running
 - The run publishes state `cancelled` with exit `130`, so a cancelled run is never mistaken for a
   step that failed on its merits.
 - **A new `id` does not cancel.** An in-flight step may be mid-change, and inferring "kill it" from
-  a queued request would be guessing. The new request waits its turn, and the agent says so.
-- While a step runs the agent reads the request from the **remote ref**, never by pulling. A rebase
+  a queued request would be guessing. The new request waits its turn, and the station says so.
+- While a step runs the station reads the request from the **remote ref**, never by pulling. A rebase
   underneath a running step would corrupt the run it was only trying to observe.
-- Ctrl-C on the agent signals the running step too, rather than leaving it detached to push a log
+- Ctrl-C on the station signals the running step too, rather than leaving it detached to push a log
   with nothing watching it.
 
 ### station/status
@@ -187,13 +187,13 @@ matching `APPLY=1`, `CONFIRM=yes`, `DESTROY=1`, `FORCE=1`, `WRITE=1` in the requ
 The second exists because a declaration cannot see the first: a step that plans is read-only until
 `env: APPLY=1` makes it apply.
 
-A step that declares nothing is refused outright, by `run.sh` and by the agent before it. Fail
+A step that declares nothing is refused outright, by `run.sh` and by the station before it. Fail
 closed: the alternative is inferring authority from a step that never claimed any.
 
-An action the agent is willing to run still has to carry `env: CONFIRM=yes`, and `run.sh` gates it
+An action the station is willing to run still has to carry `env: CONFIRM=yes`, and `run.sh` gates it
 again on its own. **Both gates, deliberately.**
 
-This default was `1` for a while, and the reason was real: the flag is typed once at agent start,
+This default was `1` for a while, and the reason was real: the flag is typed once at station start,
 often days before the request it gates, and forgetting it surfaced as a *silent* `refused` long
 after the push - wasting the round trip this tooling exists to save. What retired that argument was
 `publish_status "refused"`. The refusal now reaches the far side, with its reason and the flag that
@@ -228,7 +228,7 @@ which self-updates on pull.
 
 ### Operational notes
 
-- **One agent per checkout.** `.station.lock` holds the pid; a second refuses to start rather than
+- **One station per checkout.** `.station.lock` holds the pid; a second refuses to start rather than
   double-running every request. A stale lock from a dead pid is cleared automatically.
 - **A fetch failure is a blip, not a death.** The loop is meant to outlive a flapping link: it
   reports, backs off and carries on, and says so when the fetch recovers.
@@ -236,11 +236,11 @@ which self-updates on pull.
   polling. It will not force anything or discard local work.
 - **`.station-state` and `.station.lock` are gitignored** - they are per-node facts, not shared ones.
 - **An interrupted run is retried, not skipped.** `.station-state` is written after
-  a run finishes, so an agent killed mid-step picks the same request up again on
+  a run finishes, so a station killed mid-step picks the same request up again on
   restart. That is the right default for a read-only diagnostic and the reason
   state-changing steps are gated twice: if you do not want a retry, change the
   `id` before restarting.
-- The agent decides *when*; `run.sh` still owns the log, the timestamps and the push. Keep it that
+- The station decides *when*; `run.sh` still owns the log, the timestamps and the push. Keep it that
   way, for the same reason steps don't own their own logging.
 
 ---

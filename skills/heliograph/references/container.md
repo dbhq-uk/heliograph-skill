@@ -492,10 +492,10 @@ once.
   else that needs uid-matching was; this specific combination is judged
   lower risk (a plain read-only bind mount and an environment variable, with
   no uid-dependent logic of its own) rather than zero risk.
-- **Azure Container Instances has no host session to forward an agent
+- **Azure Container Instances has no host session to forward a station
   socket from.** `openssh-client` is present regardless, but that
   deployment path is token-based over HTTPS on its own terms; nothing here
-  makes SSH forwarding universal, only possible where an agent exists to
+  makes SSH forwarding universal, only possible where a station exists to
   forward.
 - **Nothing here exercises a capture against a real remote machine any
   differently than the toolkit already does without a container.** A

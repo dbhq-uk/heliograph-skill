@@ -101,7 +101,7 @@ resource back. The exit code is the weakest evidence in the log.
 ## 12. One request, one runner. Bind them to different branches
 
 Two runners on one transport repo will both answer the same request, and there
-is no lock that stops them. Each agent records the last id it handled in
+is no lock that stops them. Each station records the last id it handled in
 `.station-state`, which is gitignored because it is a fact about one machine, so
 neither can see what the other has done. A build agent makes it worse: a
 pipeline that cleans its workspace starts every job with no state file at all,

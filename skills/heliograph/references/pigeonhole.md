@@ -31,9 +31,9 @@ Four containers on one account:
 | Container | Holds | Written by |
 |---|---|---|
 | `requests` | one request per lane, overwritten in place | you |
-| `logs` | every captured log, kept | the agent |
-| `status` | one heartbeat per lane, overwritten | the agent |
-| `agent` | `bundle.tgz`, the agent's own code | you |
+| `logs` | every captured log, kept | the station |
+| `status` | one heartbeat per lane, overwritten | the station |
+| `agent` | `bundle.tgz`, the station's own code | you |
 
 ## The lane replaces branch binding
 
@@ -43,7 +43,7 @@ Git gets that from branch binding - each runner reads a different branch, so a d
 
 Set it with `PIGEONHOLE_LANE` on both sides.
 
-## The agent's code arrives as a blob
+## The station's code arrives as a blob
 
 The toolkit's container image bootstraps by cloning the transport repo, which is exactly what a host in this situation cannot do. So the code travels the same way the requests do:
 
@@ -51,13 +51,13 @@ The toolkit's container image bootstraps by cloning the transport repo, which is
 ./drop.sh bundle       # packs pigeonhole.sh, caplib.sh, run.sh, steps/, lib/
 ```
 
-The host downloads and extracts that at start. The useful consequence is that **updating the agent is an upload, not a redeploy** - which matters more than it sounds, because redeploying is often the operation that gives you no logs when it goes wrong.
+The host downloads and extracts that at start. The useful consequence is that **updating the station is an upload, not a redeploy** - which matters more than it sounds, because redeploying is often the operation that gives you no logs when it goes wrong.
 
 ## Authentication is deliberately asymmetric
 
 **You** use your normal identity - `az ... --auth-mode login` - because you have internet and can reach the identity provider.
 
-**The agent uses a SAS or its own managed identity**, and neither is a shortcut. A SAS is validated by the storage service itself with no token round trip, so it needs no egress of its own; a service principal would need `login.microsoftonline.com`, which a host with no egress cannot reach.
+**The station uses a SAS or its own managed identity**, and neither is a shortcut. A SAS is validated by the storage service itself with no token round trip, so it needs no egress of its own; a service principal would need `login.microsoftonline.com`, which a host with no egress cannot reach.
 
 > **Corrected 2026-09-03.** This section used to say a SAS was *the only* credential that works, on the grounds that a VNet-injected Azure Container Instance has no instance metadata service. **That is false and was never measured.** A container group with a user-assigned identity in a delegated subnet asks IMDS for a token and gets HTTP 200 back - tested, and recorded in [azure.md](azure.md). The claim survived because a negative asserted confidently reads like a finding; the measured result is the one that stands.
 
@@ -68,7 +68,7 @@ So prefer `PIGEONHOLE_AUTH=identity` wherever an identity is available. An Azure
 Where a SAS is still used, two consequences are worth stating plainly:
 
 - **The account must allow shared keys**, because minting a SAS requires the account key. If your other storage accounts have shared keys disabled, this one is a deliberate exception and should say so in its own configuration.
-- **An expired SAS does not fail loudly.** The agent keeps polling, every request returns 403, and you see a request that is never answered - indistinguishable from a step that is still running. Know the expiry date, and check the status blob's timestamp before assuming a step is slow.
+- **An expired SAS does not fail loudly.** The station keeps polling, every request returns 403, and you see a request that is never answered - indistinguishable from a step that is still running. Know the expiry date, and check the status blob's timestamp before assuming a step is slow.
 
 Scope the SAS to read and write, **not delete**. A runner that can delete its own logs can destroy the evidence the investigation exists to collect, and this credential sits somewhere several people can read.
 
@@ -108,7 +108,7 @@ It is a separate file from `station.sh` on purpose. Wherever this is needed, a g
 
 Each of these cost a full round trip.
 
-**The image needs `curl`, and may not have one.** A minimal image can fail with `/bin/sh: 1: curl: not found` and exit 127 before the agent exists to report anything.
+**The image needs `curl`, and may not have one.** A minimal image can fail with `/bin/sh: 1: curl: not found` and exit 127 before the station exists to report anything.
 
 **It may also have no `tar`.** Extract the bundle with Python's `tarfile` as a fallback, which the toolkit's bootstrap does. Nothing can be installed to fix this at runtime - the package manager cannot reach a repository either.
 
@@ -118,4 +118,4 @@ Each of these cost a full round trip.
 
 **Create the bundle before the runner starts.** A host that boots and finds no `bundle.tgz` crash-loops until one appears. Recoverable, but a crash-looping VNet-injected container returns no logs, so it is a bad place to be.
 
-**A container that runs to completion is readable when a crash-looping one is not.** When the agent itself will not start, deploy a throwaway container in the same subnet that runs a probe and exits. Its logs come back normally, and that is how nearly every finding in this document was obtained.
+**A container that runs to completion is readable when a crash-looping one is not.** When the station itself will not start, deploy a throwaway container in the same subnet that runs a probe and exits. Its logs come back normally, and that is how nearly every finding in this document was obtained.

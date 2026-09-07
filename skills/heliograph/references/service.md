@@ -106,6 +106,9 @@ reach, and `station.sh` honours it by exiting 0. Under `Restart=always` systemd
 started it straight back up, it read the same stop flag, exited again, and round
 it went. Measured on a live control node:
 
+Captured before `agent` was renamed to `station`, and left as it was recorded:
+this is evidence, and the line the loop prints today reads `stopped`.
+
 ```
 21:33:35  agent: stopped (egress-3)
 21:33:55  agent: stopped (egress-3)
@@ -116,7 +119,7 @@ NRestarts=3   Active: activating (auto-restart)   status=0/SUCCESS
 
 Every one of those is a commit **pushed to the transport repo**, and it only ends
 when `StartLimitBurst` trips and leaves the unit `failed` - which reads like a
-breakage when the agent had done exactly what it was told.
+breakage when the station had done exactly what it was told.
 
 `station.sh` runs forever unless deliberately stopped, so exit 0 means "I was told
 to stop" and must stick. A crash, or a preflight refusing a bad credential, is
@@ -168,7 +171,7 @@ for a broken unit that was never written. The directory exists regardless, so
 ## The credential is where an unattended loop actually fails
 
 **A detached process inherits no environment.** `GIT_TOKEN` typed before
-`./station.sh` reaches the agent. `GIT_TOKEN` typed before `./service.sh install`
+`./station.sh` reaches the station. `GIT_TOKEN` typed before `./service.sh install`
 does **not** reach the service. The loop then starts perfectly, polls happily,
 and cannot push a single log, which is discovered hours later by whoever is
 waiting on the far side.
@@ -192,8 +195,8 @@ since git needs no credential for one.
 An `ssh://` remote gets said something about either way, because both cases are
 traps:
 
-- **with** an agent in the shell, a warning: the service will not inherit it, and
-  an agent key lasts only as long as the session that this whole feature exists
+- **with** a station in the shell, a warning: the service will not inherit it, and
+  a station key lasts only as long as the session that this whole feature exists
   to outlive
 - **without** one, a note: the service will depend on a key ssh can find by
   itself, and `./start.sh --check` settles that in one step
@@ -201,7 +204,7 @@ traps:
 It does **not** try to resolve the key itself. ssh's own config resolution is
 richer than anything reimplemented here, and a second resolver that disagreed
 would report a key git never uses. What settles it is the write check, which
-`start.sh` runs at every service start and which refuses to start the agent if
+`start.sh` runs at every service start and which refuses to start the station if
 the push would fail.
 
 ## station.sh deliberately does NOT trap HUP
@@ -210,7 +213,7 @@ This looks like the obvious one-line fix and it is the wrong one.
 
 `cleanup` signals the running step's process group, so trapping `HUP` would
 **kill an in-flight step whenever a connection dropped**. An hour-long terraform
-plan destroyed because somebody's wifi blinked is far worse than the agent
+plan destroyed because somebody's wifi blinked is far worse than the station
 exiting while the step finishes and pushes its log on its own.
 
 The stale lock this leaves behind is not a problem either. `station.sh` already
