@@ -40,8 +40,8 @@ station. The difference is the whole point of this table.
 | Azure Container Instances, VNet-injected (`toolkit/azure/aci/`) | **proven** | deployed live |
 | Azure Web App for Containers (`toolkit/azure/webapp/`) | **proven** | deployed live |
 | Azure Container Apps Job, scheduled (`toolkit/azure/containerappsjob/`) | **proven** | deployed live |
-| launchd (`toolkit/service.sh`) | **validated** | `tests/test-launchd.sh` loads a real LaunchAgent on a macOS runner, and the `stop: yes` assertion has held; promoted only once it has run green consistently |
-| Azure VM with a systemd unit (`toolkit/azure/vm/`) | **validated** | the template validates; the subscription had no quota to prove it |
+| launchd (`toolkit/service.sh`) | **validated** | `tests/test-launchd.sh` loads a real LaunchAgent on a macOS runner and the `stop: yes` assertion has held. Promoted once it has run green consistently: [#40](https://github.com/dbhq-uk/heliograph-skill/issues/40) |
+| Azure VM with a systemd unit (`toolkit/azure/vm/`) | **validated** | the template validates; the subscription had no quota to prove it: [#43](https://github.com/dbhq-uk/heliograph-skill/issues/43) |
 
 ### What "validated" costs you
 
@@ -51,7 +51,8 @@ notes are full of them: a provider that double-prefixed a registry host, a
 container group that needed a port declared for a process that listens on
 nothing, a boot log you cannot get with `log tail`.
 
-If you deploy one of these and it works, that is worth a PR to this table.
+If you deploy one of these and it works, that is worth a PR to this table. Each
+validated row links the issue tracking what would move it.
 
 ## Choosing one
 
