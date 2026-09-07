@@ -488,6 +488,31 @@ jobs:
           Write-Output "start.sh --check exited $LASTEXITCODE, expected non-zero with no origin"
           exit 0
 
+      - name: service.ps1 registers a task Windows will keep
+        # The runner has only ever proved that station.ps1 finds bash and hands
+        # over. It has never installed the scheduled task, which is the whole
+        # point of service.ps1 and the reason a Windows control node survives a
+        # reboot.
+        #
+        # The assertion that earns this step is ExecutionTimeLimit. The default
+        # is THREE DAYS, after which Windows stops the task without comment - a
+        # loop that quietly dies after three days, on a machine that is usually
+        # somebody else's, long after anyone stopped watching. That setting is
+        # our belief about what Windows will do; reading it back off the
+        # registered task is the only way to know Windows agrees.
+        shell: pwsh
+        run: |
+          ./tests/test-scheduled-task.ps1 2>&1 | Tee-Object -FilePath task.out
+          $body = Get-Content task.out -Raw
+          if ($body -match '(?m)^SKIP') {
+            Write-Output "::error::the scheduled task test skipped on a Windows runner, which should be impossible."
+            exit 1
+          }
+          if ($body -notmatch '(?m)^test-scheduled-task\.ps1: \d+ passed, 0 failed, 0 skipped$') {
+            Write-Output "::error::test-scheduled-task.ps1 did not report a clean run"
+            exit 1
+          }
+
       - name: The CR-tolerant branch of the line-ending probe, which Linux cannot reach
         shell: bash
         run: |
