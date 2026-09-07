@@ -392,3 +392,4 @@ Far side, here, because it ships with the payload:
 | [references/container.md](references/container.md) | running the control node in a container: what ships, why, and the honest limits |
 | [references/windows.md](references/windows.md) | a Windows control node, steps written in PowerShell, and what line endings really do |
 | [references/service.md](references/service.md) | making the loop outlive the session that started it |
+| [references/hosts.md](references/hosts.md) | every host, the contract it must meet, and which ones are actually proven |
