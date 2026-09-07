@@ -40,8 +40,25 @@ station. The difference is the whole point of this table.
 | Azure Container Instances, VNet-injected (`toolkit/azure/aci/`) | **proven** | deployed live |
 | Azure Web App for Containers (`toolkit/azure/webapp/`) | **proven** | deployed live |
 | Azure Container Apps Job, scheduled (`toolkit/azure/containerappsjob/`) | **proven** | deployed live |
+| Azure VM with a systemd unit (`toolkit/azure/vm/`) | **proven** | deployed live in westeurope, ran a step, log came back |
 | launchd (`toolkit/service.sh`) | **validated** | `tests/test-launchd.sh` loads a real LaunchAgent on a macOS runner and the `stop: yes` assertion has held. Promoted once it has run green consistently: [#40](https://github.com/dbhq-uk/heliograph-skill/issues/40) |
-| Azure VM with a systemd unit (`toolkit/azure/vm/`) | **validated** | the template validates; the subscription had no quota to prove it: [#43](https://github.com/dbhq-uk/heliograph-skill/issues/43) |
+
+### Two things a real deployment found
+
+Both cost a deployment to find, which is the whole argument for the word.
+
+**The subscription had no B-series at all.** `Standard_B1s` is the template's
+default and the cheapest size that runs the loop, and it reported
+`SkuNotAvailable` in uksouth. So did every other B size, and so did every
+unrestricted size in that region: a Sponsorship subscription restriction, not a
+quota, and the vCPU quota page showed 65 free the whole time. It deployed on
+`Standard_D2s_v3` in westeurope.
+
+**A bring-your-own VNet has to have outbound internet.** The template says
+nothing about it and the first deployment succeeded, then cloud-init timed out
+cloning after 135 seconds and systemd reported `203/EXEC` on a `start.sh` that
+had never arrived. The VM looked healthy and the loop did not exist. A NAT
+gateway on the subnet fixed it.
 
 ### What "validated" costs you
 

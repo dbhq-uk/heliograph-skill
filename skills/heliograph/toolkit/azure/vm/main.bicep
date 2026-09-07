@@ -34,7 +34,7 @@ param location string = resourceGroup().location
 @description('Existing VNet.')
 param vnetName string
 
-@description('Existing subnet. No delegation needed - a VM NIC is not a delegated workload the way the other three hosts are.')
+@description('Existing subnet. No delegation needed - a VM NIC is not a delegated workload the way the other three hosts are. IT MUST HAVE OUTBOUND INTERNET: a NAT gateway, a route through a firewall, or a public IP. Without one the deployment SUCCEEDS and cloud-init then times out cloning the transport repo, leaving a healthy-looking VM whose service reports 203/EXEC on a start.sh that never arrived. Found by deploying it.')
 param subnetName string
 
 @description('The transport repo to clone, https:// or git@.')
