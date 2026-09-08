@@ -68,24 +68,66 @@ IMAGE="heliograph-toolkit-test:local"
 # uid must never accidentally trigger nor accidentally suppress.
 HOST_UID="$(id -u)"
 
+# DOCKER, OR NOTHING - and that is narrower than it was, deliberately.
+#
+# This used to take the first runtime whose `info` answered, docker then
+# podman. On a machine with docker installed and its daemon STOPPED, that
+# silently selected rootless podman and ran all 228 fixtures against it. 35 of
+# them fail there, reliably, and none of the failures are about the code under
+# test: the fixtures bind-mount a checkout and clone into it, rootless podman
+# maps the container user to a subordinate uid on the host, and the clone dies
+# with "Permission denied" on the .git it has just been told to create. CI
+# always has a running docker, so CI never saw one of them.
+#
+# THAT IS dbhq-uk/heliograph-skill#41. It was reported as the suite interfering
+# with itself, because that is what it looks like from the outside: failures in
+# a long local run, green in CI, and the same file passing when run on its own
+# later. The leak detector in run-tests.sh was added to catch the leftover unit
+# or container doing it, and it never found one - because there was none. The
+# variable was never the order of the tests. It was which runtime answered
+# first, which changes when a developer's docker daemon happens to be down.
+#
+# So the substitution is refused instead of made quietly. Under docker this
+# file proves what it claims. Under podman it cannot, and saying so is worth
+# more than 35 red lines that a developer has to be told to ignore - which is
+# the state a test suite does not come back from.
+#
+# It costs nothing in CI, where docker is always up and task 4 forbids this
+# file from skipping at all. It costs nothing in podman coverage either: the
+# --userns=keep-id fixtures further down ask for `--runtime podman` BY NAME and
+# are gated on podman alone, so they never depended on what this loop picked.
 RUNTIME=""
-for candidate in docker podman; do
-  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" info >/dev/null 2>&1; then
-    RUNTIME="$candidate"
-    break
-  fi
-done
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  RUNTIME=docker
+fi
 
 if [ -z "$RUNTIME" ]; then
+  if command -v docker >/dev/null 2>&1; then
+    why="docker is on PATH but its daemon does not answer 'docker info'"
+    fix="start it - on systemd that is 'sudo systemctl start docker'"
+  else
+    why="docker is not on PATH"
+    fix="install docker"
+  fi
+  cat <<EOF
+SKIP  test-container.sh: $why.
+      NONE of the image's properties were checked by this run: not bash's
+      version, not sed -u, not base64 -w0, not the presence of
+      sha256sum/date/git/setsid, not the unprivileged user, not passwordless
+      sudo, not the writable working directory.
+      To check them here, $fix.
+EOF
+  if command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1; then
+    cat <<'EOF'
+      Podman IS reachable, and this file does not fall back to it on purpose.
+      Its fixtures bind-mount a checkout and clone into it; rootless podman
+      maps that to a subordinate uid and 35 assertions fail on the mapping
+      rather than on anything being tested. See dbhq-uk/heliograph-skill#41.
+EOF
+  fi
   cat <<'EOF'
-SKIP  test-container.sh: no container runtime is reachable on this machine
-      (checked: docker, podman - neither is on PATH with a daemon that
-      answers `info`). NONE of the image's properties were checked by this
-      run: not bash's version, not sed -u, not base64 -w0, not the presence
-      of sha256sum/date/git/setsid, not the unprivileged user, not
-      passwordless sudo, not the writable working directory. This is a SKIP,
-      not a pass - rerun on a machine with a container runtime, or see this
-      run in CI, where task 4 does not allow this file to skip.
+      This is a SKIP, not a pass. CI runs this file under docker and task 4
+      does not allow it to skip there.
 EOF
   exit 0
 fi

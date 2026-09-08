@@ -34,15 +34,37 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/assert.sh"
 REPO="$HERE/.."
 
+# REACHABLE, not merely installed - and docker by name.
+#
+# This used to accept the binary being on PATH. With docker installed and its
+# daemon stopped it selected docker anyway and the run died four steps later at
+# "the toolkit image would not build", which blames the Dockerfile for a
+# stopped daemon and sends whoever reads it to the wrong file entirely. The
+# check belongs here, where the answer is still "your daemon is down".
+#
+# Docker specifically, because `kind load docker-image` below talks to docker's
+# daemon whatever built the image. Naming podman as an alternative was never
+# true for this file.
 RUNTIME=""
-for r in docker podman; do command -v "$r" >/dev/null 2>&1 && { RUNTIME="$r"; break; }; done
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  RUNTIME=docker
+fi
 
 missing=""
+hint=""
 command -v kind >/dev/null 2>&1    || missing="$missing kind"
 command -v kubectl >/dev/null 2>&1 || missing="$missing kubectl"
-[ -n "$RUNTIME" ]                  || missing="$missing docker/podman"
+if [ -z "$RUNTIME" ]; then
+  missing="$missing docker"
+  # The distinction worth spending a line on: an absent docker is a machine
+  # that was never going to run this, a stopped one is a machine that is two
+  # words away from running it.
+  if command -v docker >/dev/null 2>&1; then
+    hint=" docker is installed but its daemon does not answer 'docker info' - try 'sudo systemctl start docker'."
+  fi
+fi
 if [ -n "$missing" ]; then
-  t_skip "missing:$missing. The Kubernetes manifest was NOT applied to any cluster."
+  t_skip "missing:$missing. The Kubernetes manifest was NOT applied to any cluster.$hint"
   t_summary
   exit 0
 fi

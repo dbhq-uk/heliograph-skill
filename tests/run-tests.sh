@@ -5,21 +5,32 @@
 # Runs them all and reports every failure rather than stopping at the first, for
 # the same reason `probe` does not abort: a diagnostic wants every result.
 #
-# IT ALSO WATCHES FOR LEAKED STATE, and that needs explaining.
+# IT ALSO WATCHES FOR LEAKED STATE, and that needs explaining - including how
+# it earned its keep by finding NOTHING.
 #
-# A full local run once produced three failures - two in test-container.sh, one
-# in test-service.sh reporting "no running loop found after install" - that did
-# not reproduce when either test was run alone, and never happened in CI. The
-# obvious explanation was state left behind by an earlier test: a systemd user
-# unit, a container, a stray loop.
+# A full local run once produced failures - in test-container.sh and in
+# test-service.sh, the latter reporting "no running loop found after install" -
+# that did not reproduce when either test was run alone, and never happened in
+# CI. The obvious explanation was state left behind by an earlier test: a
+# systemd user unit, a container, a stray loop. That was #41.
 #
-# It has not been seen since, and a fix for a fault nobody can reproduce is a
-# guess with a commit message. So instead of guessing, this names the culprit if
-# it happens again: after each file it counts the things a test might leave
-# behind, and says which test left them.
+# The obvious explanation was wrong. This detector was added rather than a
+# guessed fix, and on the run that finally reproduced the failures it reported
+# no leak at all: the machine came back exactly as it started, 36 failures
+# notwithstanding. That is what ruled the theory out and sent the search
+# somewhere else.
 #
-# That turns "the suite is flaky" - which is where a suite goes to be ignored -
-# into "test-X left a container running", which is a bug report.
+# THE REAL CAUSE WAS THE CONTAINER RUNTIME. test-container.sh took the first
+# runtime whose `info` answered, docker then podman, so a stopped docker daemon
+# silently swapped in rootless podman, where 35 of its fixtures fail on uid
+# mapping. Nothing leaked, and nothing about the order of the tests mattered.
+# Both that file and test-kubernetes.sh now require docker and say so when it
+# is missing, instead of substituting a runtime they cannot prove anything on.
+#
+# The counting stays, for the next fault of this shape. It turns "the suite is
+# flaky" - which is where a suite goes to be ignored - into either "test-X left
+# a container running", which is a bug report, or a cleared suspect, which is
+# what it was worth here.
 #
 # The leak report NEVER fails the run. A leak is not a failed assertion, and a
 # suite that goes red for tidiness teaches people to skip it, which costs more
@@ -83,7 +94,9 @@ if [ "$final" != "$baseline" ]; then
   printf 'Left by:%s\n' "$leaked_by"
   printf 'This does not fail the run. It is here so that if the suite starts\n'
   printf 'failing in ways a single test does not, the culprit has a name.\n'
-  printf 'See dbhq-uk/heliograph-skill#41.\n'
+  printf 'Note that in #41 - the fault this was built for - it correctly found\n'
+  printf 'nothing, and the cause turned out to be a stopped docker daemon\n'
+  printf 'silently swapping in podman. So check which runtime ran too.\n'
   printf -- '----------------------------------------------------------------\n'
 fi
 
