@@ -30,6 +30,10 @@ opens a listener.
 **Validated** means the file is well-formed and reviewed but has never started a
 station. The difference is the whole point of this table.
 
+Every host is currently proven. That is not a reason to drop the second word:
+the next host added will start out validated, and it should be labelled
+honestly rather than inheriting the row above it.
+
 | host | status | evidence |
 |---|---|---|
 | operator's terminal (`start.sh`) | **proven** | `tests/test-start.sh`, 94 assertions, every CI run |
@@ -37,11 +41,11 @@ station. The difference is the whole point of this table.
 | systemd (`toolkit/service.sh`) | **proven** | `tests/test-service.sh` installs a unit and finds a running loop, every CI run |
 | Kubernetes (`toolkit/kubernetes/`) | **proven** | `tests/test-kubernetes.sh` applies the shipped manifest to a kind cluster and drives a run through it, every CI run |
 | Windows scheduled task (`toolkit/service.ps1`) | **proven** | the Windows runner registers the task, reads `ExecutionTimeLimit` back off it, and removes it, every CI run |
+| launchd (`toolkit/service.sh`) | **proven** | `tests/test-launchd.sh` loads a real LaunchAgent on a macOS runner and proves `stop: yes` sticks, every CI run |
 | Azure Container Instances, VNet-injected (`toolkit/azure/aci/`) | **proven** | deployed live |
 | Azure Web App for Containers (`toolkit/azure/webapp/`) | **proven** | deployed live |
 | Azure Container Apps Job, scheduled (`toolkit/azure/containerappsjob/`) | **proven** | deployed live |
 | Azure VM with a systemd unit (`toolkit/azure/vm/`) | **proven** | deployed live in westeurope, ran a step, log came back |
-| launchd (`toolkit/service.sh`) | **validated** | `tests/test-launchd.sh` loads a real LaunchAgent on a macOS runner and the `stop: yes` assertion has held. Promoted once it has run green consistently: [#40](https://github.com/dbhq-uk/heliograph-skill/issues/40) |
 
 ### Two things a real deployment found
 

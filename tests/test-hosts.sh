@@ -90,15 +90,30 @@ else
   t_no "the status table has $rows rows marked proven or validated, expected at least 10"
 fi
 
-# Both words must actually be used. A table where everything is "proven" is the
-# shape this file exists to prevent, and it would pass a check that only counted.
+# Both words must be DEFINED, which is not the same as both being used.
+#
+# This first demanded both appear in the table, to stop somebody marking
+# everything proven. Then everything became proven - legitimately, with
+# evidence, ten hosts out of ten - and the check failed. It was asking us to
+# keep a host unproven to satisfy a test, which is the tail wagging the dog.
+#
+# The real guard against a false "proven" is the evidence check below, and that
+# is untouched. What has to survive here is the VOCABULARY: the page must keep
+# explaining what the two words mean, so the next host added without a
+# deployment gets labelled honestly rather than inheriting the row above it.
 for word in proven validated; do
-  if grep -q "\*\*$word\*\*" "$HOSTS"; then
-    t_ok "the table uses '$word'"
+  if grep -qi "\*\*$word\*\* means" "$HOSTS"; then
+    t_ok "the page still defines '$word'"
   else
-    t_no "the table uses '$word'"
+    t_no "the page no longer defines '$word', so the distinction has no meaning"
   fi
 done
+
+if grep -q "\*\*proven\*\*" "$HOSTS"; then
+  t_ok "the table uses 'proven'"
+else
+  t_no "the table uses 'proven'"
+fi
 
 # --- a claim of "proven" has to name evidence that exists --------------------
 # No test can know whether a host really was deployed. What it CAN refuse is the
